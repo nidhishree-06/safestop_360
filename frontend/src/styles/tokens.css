@@ -1,0 +1,48 @@
+/* SafeStop 360 — Core Colour, Typography, Spacing & Elevation Design Tokens */
+
+:root {
+  /* Core Palette */
+  --color-mint: #a7e8d2;
+  --color-mint-soft: #e2f8f0;
+  --color-mint-dark: #68bfa3;
+  --color-mint-deep: #1b5e4a;
+
+  --color-warm-white: #f7f7f3;
+  --color-warm-surface: #f1f0ea;
+  --color-pure-white: #ffffff;
+
+  --color-charcoal: #22252a;
+  --color-text-secondary: #5f6369;
+  --color-text-muted: #777b80;
+  --color-border: #e9e7e2;
+
+  /* Selective Accents */
+  --color-pink: #e96ba8;
+  --color-pink-soft: #fce8f2;
+  --color-violet: #9a7bea;
+  --color-violet-soft: #efeafd;
+  --color-blue: #74b9f4;
+  --color-blue-soft: #e7f3fe;
+
+  /* Semantic Status */
+  --color-warning: #f0d98a;
+  --color-warning-soft: #fdf6dc;
+  --color-warning-deep: #6b5309;
+  --color-error: #e58a8a;
+  --color-error-soft: #fdeaea;
+  --color-error-deep: #852626;
+
+  /* Radii */
+  --radius-control: 14px;
+  --radius-card: 20px;
+  --radius-glass: 24px;
+  --radius-pill: 9999px;
+
+  /* Focus Ring (Reference Group A: soft mint focus ring) */
+  --focus-ring-mint: 0 0 0 3px rgba(167, 232, 210, 0.78), 0 0 0 5px rgba(104, 191, 163, 0.28);
+
+  /* Motion Curves */
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 160ms;
+  --duration-base: 260ms;
+}
