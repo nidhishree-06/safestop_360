@@ -1,28 +1,28 @@
-/* SafeStop 360 — Core Colour, Typography, Spacing & Elevation Design Tokens */
+/* SafeStop 360 — Design System Tokens (v2) */
 
 :root {
   /* Core Palette */
   --color-mint: #a7e8d2;
-  --color-mint-soft: #e2f8f0;
+  --color-mint-soft: #e4f8f1;
   --color-mint-dark: #68bfa3;
-  --color-mint-deep: #1b5e4a;
+  --color-mint-deep: #1a5c47;
 
   --color-warm-white: #f7f7f3;
-  --color-warm-surface: #f1f0ea;
+  --color-warm-surface: #f0efe9;
   --color-pure-white: #ffffff;
 
   --color-charcoal: #22252a;
-  --color-text-secondary: #5f6369;
-  --color-text-muted: #777b80;
+  --color-text-secondary: #5a5e63; /* AA contrast >= 6.1:1 on warm-white/white */
+  --color-text-muted: #6a6e73;
   --color-border: #e9e7e2;
 
   /* Selective Accents */
   --color-pink: #e96ba8;
-  --color-pink-soft: #fce8f2;
+  --color-pink-soft: #fceaf3;
   --color-violet: #9a7bea;
-  --color-violet-soft: #efeafd;
+  --color-violet-soft: #f0ebfd;
   --color-blue: #74b9f4;
-  --color-blue-soft: #e7f3fe;
+  --color-blue-soft: #e9f4fe;
 
   /* Semantic Status */
   --color-warning: #f0d98a;
@@ -32,16 +32,22 @@
   --color-error-soft: #fdeaea;
   --color-error-deep: #852626;
 
-  /* Radii */
-  --radius-control: 14px;
+  /* Radii: 12 / 20 / 28 / pill */
+  --radius-control: 12px;
   --radius-card: 20px;
-  --radius-glass: 24px;
+  --radius-glass: 28px;
   --radius-pill: 9999px;
 
-  /* Focus Ring (Reference Group A: soft mint focus ring) */
-  --focus-ring-mint: 0 0 0 3px rgba(167, 232, 210, 0.78), 0 0 0 5px rgba(104, 191, 163, 0.28);
+  /* Elevation levels 1-4 */
+  --elev-1: 0 2px 8px rgba(34, 37, 42, 0.04), 0 1px 2px rgba(34, 37, 42, 0.03);
+  --elev-2: 0 6px 20px rgba(34, 37, 42, 0.06), 0 2px 5px rgba(34, 37, 42, 0.03);
+  --elev-3: 0 14px 34px rgba(34, 37, 42, 0.09), 0 3px 10px rgba(34, 37, 42, 0.04);
+  --elev-4: 0 24px 52px rgba(34, 37, 42, 0.13), 0 6px 16px rgba(34, 37, 42, 0.06);
 
-  /* Motion Curves */
+  /* Focus Ring */
+  --focus-ring-mint: 0 0 0 3px rgba(167, 232, 210, 0.85), 0 0 0 5px rgba(104, 191, 163, 0.32);
+
+  /* Motion */
   --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
   --duration-fast: 160ms;
   --duration-base: 260ms;

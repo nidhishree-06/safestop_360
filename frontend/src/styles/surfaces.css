@@ -1,13 +1,11 @@
-/* SafeStop 360 — Matte, Liquid Glass, 3D Glassmorphism & Soft Neumorphism Surfaces */
+/* SafeStop 360 — Matte, Soft Neumorphism & Liquid Glass Surfaces */
 
-/* 1. MATTE SURFACES (Main sections, dashboards, forms, tables, map detail cards) */
+/* 1. MATTE SURFACES (Forms, tables, dashboards, admin) */
 .surface-matte {
   background-color: var(--color-pure-white);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
-  box-shadow:
-    0 4px 20px rgba(34, 37, 42, 0.042),
-    0 1px 3px rgba(34, 37, 42, 0.028);
+  box-shadow: var(--elev-1);
   transition:
     box-shadow var(--duration-base) var(--ease-smooth),
     border-color var(--duration-base) var(--ease-smooth),
@@ -22,75 +20,50 @@
 
 .surface-matte-interactive:hover {
   border-color: rgba(104, 191, 163, 0.55);
-  box-shadow:
-    0 10px 28px rgba(34, 37, 42, 0.065),
-    0 2px 6px rgba(104, 191, 163, 0.08);
+  box-shadow: var(--elev-2);
 }
 
-/* 2. LIQUID GLASS SURFACES (Floating nav, modals, hero floaters, floating map controls) */
+/* 2. LIQUID GLASS (Floating nav, hero overlays, floating stat cards, modals, map controls) */
 .surface-glass {
-  background: rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.45);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
   backdrop-filter: blur(20px) saturate(150%);
-  border: 1px solid rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-glass);
   box-shadow:
-    0 12px 34px rgba(34, 37, 42, 0.08),
+    var(--elev-3),
     inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    inset 0 -1px 0 rgba(233, 231, 226, 0.35);
+    inset 0 -1px 0 rgba(233, 231, 226, 0.3);
 }
 
-/* 3. SELECTIVE 3D GLASSMORPHISM (Featured hero cards, Assistance Confirmation card) */
 .surface-glass-3d {
   position: relative;
   background: linear-gradient(
     145deg,
-    rgba(255, 255, 255, 0.66) 0%,
-    rgba(247, 247, 243, 0.44) 55%,
-    rgba(239, 234, 253, 0.45) 100%
+    rgba(255, 255, 255, 0.62) 0%,
+    rgba(247, 247, 243, 0.45) 55%,
+    rgba(239, 234, 253, 0.44) 100%
   );
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  backdrop-filter: blur(24px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-glass);
   box-shadow:
-    0 20px 44px rgba(34, 37, 42, 0.1),
-    0 0 0 1px rgba(154, 123, 234, 0.14),
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.9),
-    inset 0 -1px 10px rgba(233, 107, 168, 0.09);
+    var(--elev-4),
+    0 0 0 1px rgba(154, 123, 234, 0.12),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.9);
 }
 
-.surface-glass-3d::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(
-    130deg,
-    rgba(167, 232, 210, 0.75) 0%,
-    rgba(255, 255, 255, 0.65) 38%,
-    rgba(154, 123, 234, 0.5) 72%,
-    rgba(233, 107, 168, 0.55) 100%
-  );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-}
-
-/* Readable fallback for browsers without backdrop-filter */
+/* Solid fallback for browsers without backdrop-filter */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .surface-glass,
   .surface-glass-3d {
-    background: rgba(255, 255, 255, 0.95);
+    background: rgba(255, 255, 255, 0.96);
     border-color: var(--color-border);
   }
 }
 
-/* 4. SELECTIVE SOFT NEUMORPHISM (Primary buttons, search pills, filter chips, tabs) */
+/* 3. SOFT NEUMORPHISM (Primary mint button, glass secondary button, chips, tabs, inputs) */
 .neu-btn-primary {
   background: linear-gradient(180deg, #b8eedc 0%, var(--color-mint) 100%);
   color: var(--color-charcoal);
@@ -109,27 +82,30 @@
 .neu-btn-primary:hover:not(:disabled) {
   background: linear-gradient(180deg, #a7e8d2 0%, #86d7bc 100%);
   box-shadow:
-    0 8px 20px rgba(104, 191, 163, 0.44),
+    0 10px 24px rgba(104, 191, 163, 0.48),
     0 2px 5px rgba(34, 37, 42, 0.08),
     inset 0 1.5px 1px rgba(255, 255, 255, 0.85);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .neu-btn-primary:active:not(:disabled) {
-  transform: translateY(0px);
+  transform: scale(0.97);
   box-shadow:
     0 3px 8px rgba(104, 191, 163, 0.32),
     inset 0 2px 4px rgba(34, 37, 42, 0.08);
 }
 
 .neu-btn-secondary {
-  background: var(--color-pure-white);
+  background: rgba(255, 255, 255, 0.65);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
   color: var(--color-charcoal);
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(233, 231, 226, 0.9);
   border-radius: var(--radius-pill);
   box-shadow:
     4px 4px 12px rgba(34, 37, 42, 0.05),
-    -4px -4px 12px rgba(255, 255, 255, 0.9);
+    -4px -4px 12px rgba(255, 255, 255, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
   transition:
     transform var(--duration-fast) var(--ease-smooth),
     box-shadow var(--duration-fast) var(--ease-smooth),
@@ -138,7 +114,12 @@
 
 .neu-btn-secondary:hover:not(:disabled) {
   border-color: var(--color-mint-dark);
+  box-shadow: 0 6px 18px rgba(104, 191, 163, 0.22);
   transform: translateY(-1px);
+}
+
+.neu-btn-secondary:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .neu-input-pill {
@@ -188,13 +169,41 @@
   box-shadow: inset 2px 2px 5px rgba(34, 37, 42, 0.05);
 }
 
-/* Ambient Hero Glow Utilities */
-.ambient-mint-glow {
-  background: radial-gradient(
-    circle at 25% 25%,
-    rgba(167, 232, 210, 0.45) 0%,
-    rgba(154, 123, 234, 0.14) 48%,
-    rgba(233, 107, 168, 0.12) 76%,
-    rgba(247, 247, 243, 0) 100%
-  );
+/* Map marker pulse animations (transform + opacity only, 60fps) */
+@keyframes safestop-user-pulse {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes safestop-pending-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+  75% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+.user-marker-pulse {
+  animation: safestop-user-pulse 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.pending-partner-pulse {
+  animation: safestop-pending-pulse 2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 
@@ -18,6 +18,9 @@ const widthClasses: Record<NonNullable<ModalProps['maxWidth']>, string> = {
   xl: 'max-w-4xl',
 };
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal({
   open,
   onClose,
@@ -26,13 +29,47 @@ export function Modal({
   maxWidth = 'md',
   children,
 }: ModalProps) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+
+    const timer = window.setTimeout(() => {
+      const focusables = panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      focusables?.[0]?.focus();
+    }, 40);
+
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key === 'Tab' && panelRef.current) {
+        const focusables = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
+
     window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', handleKey);
+      previousFocusRef.current?.focus();
+    };
   }, [open, onClose]);
 
   return (
@@ -50,10 +87,11 @@ export function Modal({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
             onClick={onClose}
-            className="fixed inset-0 bg-charcoal/35 backdrop-blur-sm"
+            className="fixed inset-0 bg-charcoal/40 backdrop-blur-sm"
             aria-hidden="true"
           />
           <motion.div
+            ref={panelRef}
             initial={{ opacity: 0, y: 18, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.97 }}
@@ -76,7 +114,7 @@ export function Modal({
                 type="button"
                 onClick={onClose}
                 aria-label="Close modal"
-                className="rounded-full p-1.5 text-charcoal-muted transition-colors hover:bg-warm-surface hover:text-charcoal"
+                className="rounded-full p-2 text-charcoal-muted transition-colors hover:bg-warm-surface hover:text-charcoal"
               >
                 <X className="h-4 w-4" />
               </button>
