@@ -1,10 +1,14 @@
 import type {
   AdminAnalyticsResponse,
+  AuditLogItem,
   AuthResponse,
   AuthUser,
   CompanionItem,
   CompanionRequestItem,
   DashboardSummary,
+  GeoReverseResponse,
+  GeoRouteResponse,
+  GeoSearchResponse,
   HealthResponse,
   HelpRequestCreatePayload,
   HelpRequestFeedback,
@@ -12,6 +16,7 @@ import type {
   JourneyItem,
   NearbyPartnersResponse,
   NotificationItem,
+  OsmPlacesResponse,
   PartnerAvailabilityInfo,
   PartnerAvailabilityStatus,
   PartnerCreatePayload,
@@ -24,23 +29,27 @@ import type {
   SafetyReportCategory,
   SafetyReportItem,
   SafetyReportReviewStatus,
+  SharedJourneySnapshot,
   TrustedContactItem,
 } from '@/types';
 
-const DEFAULT_API_URL = import.meta.env.DEV ? 'http://127.0.0.1:8000/api' : '/api';
+const configuredApiUrl =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
+  '/api';
 
-export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || DEFAULT_API_URL
-).replace(/\/+$/, '');
+export const API_BASE_URL = configuredApiUrl.replace(/\/+$/, '');
 
 export class ApiError extends Error {
   status: number;
+  code: string;
   details: unknown;
 
-  constructor(message: string, status: number, details?: unknown) {
+  constructor(message: string, status: number, code = 'error', details?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
     this.details = details;
   }
 }
@@ -63,27 +72,29 @@ export const tokenStorage = {
   },
 };
 
-function extractErrorMessage(parsed: unknown, status: number): string {
+function extractError(parsed: unknown, status: number): { message: string; code: string } {
   if (typeof parsed === 'string' && parsed.trim()) {
-    return parsed.slice(0, 200);
+    return { message: parsed.slice(0, 200), code: 'error' };
   }
   if (typeof parsed === 'object' && parsed !== null) {
     const obj = parsed as Record<string, unknown>;
-    if (typeof obj.detail === 'string') return obj.detail;
+    const code = typeof obj.code === 'string' ? obj.code : 'error';
+    if (typeof obj.detail === 'string') return { message: obj.detail, code };
     if (Array.isArray(obj.non_field_errors) && obj.non_field_errors.length > 0) {
-      return String(obj.non_field_errors[0]);
+      return { message: String(obj.non_field_errors[0]), code };
     }
     for (const [key, val] of Object.entries(obj)) {
+      if (key === 'code') continue;
       if (Array.isArray(val) && val.length > 0) {
         const label = key === 'non_field_errors' ? '' : `${key.replace(/_/g, ' ')}: `;
-        return `${label}${String(val[0])}`;
+        return { message: `${label}${String(val[0])}`, code };
       }
       if (typeof val === 'string') {
-        return `${key.replace(/_/g, ' ')}: ${val}`;
+        return { message: `${key.replace(/_/g, ' ')}: ${val}`, code };
       }
     }
   }
-  return `Request failed with status ${status}`;
+  return { message: `Request failed with status ${status}`, code: 'error' };
 }
 
 let refreshPromise: Promise<string | null> | null = null;
@@ -122,7 +133,7 @@ async function attemptTokenRefresh(): Promise<string | null> {
 
 export async function apiRequest<T>(
   path: string,
-  options: RequestInit & { skipAuth?: boolean; _retried?: boolean } = {}
+  options: RequestInit & { skipAuth?: boolean; _retried?: boolean } = {},
 ): Promise<T> {
   const { skipAuth = false, _retried = false, headers = {}, ...rest } = options;
   const mergedHeaders = new Headers(headers);
@@ -160,7 +171,8 @@ export async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    throw new ApiError(extractErrorMessage(parsed, response.status), response.status, parsed);
+    const { message, code } = extractError(parsed, response.status);
+    throw new ApiError(message, response.status, code, parsed);
   }
 
   return parsed as T;
@@ -206,9 +218,13 @@ export function updateCurrentUser(payload: ProfileUpdatePayload): Promise<AuthUs
   });
 }
 
+export function deleteMyLocationData(): Promise<{ detail: string; deleted_pings: number }> {
+  return apiRequest('/auth/me/location-data/', { method: 'DELETE' });
+}
+
 export function changePassword(
   currentPassword: string,
-  newPassword: string
+  newPassword: string,
 ): Promise<{ detail: string }> {
   return apiRequest<{ detail: string }>('/auth/change-password/', {
     method: 'POST',
@@ -238,6 +254,52 @@ export function fetchDashboardSummary(): Promise<DashboardSummary> {
   return apiRequest<DashboardSummary>('/auth/dashboard-summary/');
 }
 
+// --- Geo Proxies (Nominatim, Overpass, OSRM) ---
+
+export function geoSearch(query: string, limit = 6): Promise<GeoSearchResponse> {
+  const qs = new URLSearchParams({ q: query, limit: String(limit) });
+  return apiRequest<GeoSearchResponse>(`/geo/search/?${qs.toString()}`, { skipAuth: true });
+}
+
+export function geoReverse(lat: number, lng: number): Promise<GeoReverseResponse> {
+  const qs = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+  return apiRequest<GeoReverseResponse>(`/geo/reverse/?${qs.toString()}`, { skipAuth: true });
+}
+
+export function geoNearbyPlaces(params: {
+  lat: number;
+  lng: number;
+  radiusM?: number;
+  category?: string;
+}): Promise<OsmPlacesResponse> {
+  const qs = new URLSearchParams({
+    lat: String(params.lat),
+    lng: String(params.lng),
+    radius: String(Math.min(Math.max(params.radiusM ?? 2000, 250), 10000)),
+  });
+  if (params.category && params.category !== 'ALL') {
+    qs.set('category', params.category);
+  }
+  return apiRequest<OsmPlacesResponse>(`/geo/places/?${qs.toString()}`, { skipAuth: true });
+}
+
+export function geoRoute(params: {
+  fromLat: number;
+  fromLng: number;
+  toLat: number;
+  toLng: number;
+  profile?: 'foot' | 'driving';
+}): Promise<GeoRouteResponse> {
+  const qs = new URLSearchParams({
+    from_lat: String(params.fromLat),
+    from_lng: String(params.fromLng),
+    to_lat: String(params.toLat),
+    to_lng: String(params.toLng),
+    profile: params.profile ?? 'foot',
+  });
+  return apiRequest<GeoRouteResponse>(`/geo/route/?${qs.toString()}`, { skipAuth: true });
+}
+
 // --- Partners & Nearby SafePlaces ---
 
 export function fetchNearbyPartners(params: {
@@ -248,10 +310,11 @@ export function fetchNearbyPartners(params: {
   search?: string;
   available_only?: boolean;
 }): Promise<NearbyPartnersResponse> {
+  const radius = Math.min(Math.max(params.radius_km ?? 5, 0.5), 25);
   const query = new URLSearchParams({
     lat: String(params.lat),
     lng: String(params.lng),
-    radius_km: String(params.radius_km ?? 25),
+    radius_km: String(radius),
   });
   if (params.category && params.category !== 'ALL') {
     query.set('category', params.category);
@@ -276,7 +339,7 @@ export function fetchMyPartners(): Promise<{ count: number; results: PartnerOwne
 }
 
 export function registerPartnerEstablishment(
-  payload: PartnerCreatePayload
+  payload: PartnerCreatePayload,
 ): Promise<PartnerOwnerItem> {
   return apiRequest<PartnerOwnerItem>('/partners/register/', {
     method: 'POST',
@@ -286,7 +349,7 @@ export function registerPartnerEstablishment(
 
 export function updatePartnerEstablishment(
   id: string,
-  payload: Partial<PartnerCreatePayload>
+  payload: Partial<PartnerCreatePayload>,
 ): Promise<PartnerOwnerItem> {
   return apiRequest<PartnerOwnerItem>(`/partners/${id}/`, {
     method: 'PATCH',
@@ -297,7 +360,7 @@ export function updatePartnerEstablishment(
 export function updatePartnerAvailability(
   id: string,
   status: PartnerAvailabilityStatus,
-  statusNote = ''
+  statusNote = '',
 ): Promise<{ partner_id: string; availability: PartnerAvailabilityInfo }> {
   return apiRequest(`/partners/${id}/availability/`, {
     method: 'PATCH',
@@ -306,7 +369,7 @@ export function updatePartnerAvailability(
 }
 
 export function fetchAdminPartners(
-  statusFilter = 'ALL'
+  statusFilter = 'ALL',
 ): Promise<{ count: number; results: PartnerOwnerItem[] }> {
   const qs = statusFilter && statusFilter !== 'ALL' ? `?status=${statusFilter}` : '';
   return apiRequest(`/admin/partners/${qs}`);
@@ -315,7 +378,7 @@ export function fetchAdminPartners(
 export function reviewAdminPartner(
   id: string,
   status: PartnerVerificationStatus,
-  notes: string
+  notes: string,
 ): Promise<PartnerOwnerItem> {
   return apiRequest<PartnerOwnerItem>(`/admin/partners/${id}/review/`, {
     method: 'POST',
@@ -336,29 +399,21 @@ export function fetchHelpRequests(params?: {
   return apiRequest(`/requests/${qs}`);
 }
 
-export function createHelpRequest(
-  payload: HelpRequestCreatePayload
-): Promise<HelpRequestItem> {
+export function createHelpRequest(payload: HelpRequestCreatePayload): Promise<HelpRequestItem> {
   return apiRequest<HelpRequestItem>('/requests/', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
-export function acceptHelpRequest(
-  id: string,
-  responseNote = ''
-): Promise<HelpRequestItem> {
+export function acceptHelpRequest(id: string, responseNote = ''): Promise<HelpRequestItem> {
   return apiRequest<HelpRequestItem>(`/requests/${id}/accept/`, {
     method: 'POST',
     body: JSON.stringify({ response_note: responseNote }),
   });
 }
 
-export function declineHelpRequest(
-  id: string,
-  responseNote = ''
-): Promise<HelpRequestItem> {
+export function declineHelpRequest(id: string, responseNote = ''): Promise<HelpRequestItem> {
   return apiRequest<HelpRequestItem>(`/requests/${id}/decline/`, {
     method: 'POST',
     body: JSON.stringify({ response_note: responseNote }),
@@ -371,10 +426,7 @@ export function markHelpRequestArrived(id: string): Promise<HelpRequestItem> {
   });
 }
 
-export function closeHelpRequest(
-  id: string,
-  responseNote = ''
-): Promise<HelpRequestItem> {
+export function closeHelpRequest(id: string, responseNote = ''): Promise<HelpRequestItem> {
   return apiRequest<HelpRequestItem>(`/requests/${id}/close/`, {
     method: 'POST',
     body: JSON.stringify({ response_note: responseNote }),
@@ -387,9 +439,29 @@ export function cancelHelpRequest(id: string): Promise<HelpRequestItem> {
   });
 }
 
+export function postHelpRequestLocation(
+  id: string,
+  payload: { latitude: number; longitude: number; accuracy_m?: number | null },
+): Promise<{ id: string; created_at: string; share_live_location: boolean }> {
+  return apiRequest(`/requests/${id}/location/`, {
+    method: 'POST',
+    body: JSON.stringify({
+      latitude: Number(payload.latitude.toFixed(6)),
+      longitude: Number(payload.longitude.toFixed(6)),
+      accuracy_m: payload.accuracy_m ?? null,
+    }),
+  });
+}
+
+export function stopHelpRequestSharing(id: string): Promise<HelpRequestItem> {
+  return apiRequest<HelpRequestItem>(`/requests/${id}/stop-sharing/`, {
+    method: 'POST',
+  });
+}
+
 export function submitHelpRequestFeedback(
   id: string,
-  payload: { rating: number; felt_safe: boolean; comment: string }
+  payload: { rating: number; felt_safe: boolean; comment: string },
 ): Promise<HelpRequestFeedback> {
   return apiRequest<HelpRequestFeedback>(`/requests/${id}/feedback/`, {
     method: 'POST',
@@ -407,7 +479,7 @@ export function fetchTrustedContacts(): Promise<{
 }
 
 export function createTrustedContact(
-  payload: Omit<TrustedContactItem, 'id' | 'created_at'>
+  payload: Omit<TrustedContactItem, 'id' | 'created_at'>,
 ): Promise<TrustedContactItem> {
   return apiRequest<TrustedContactItem>('/journeys/contacts/', {
     method: 'POST',
@@ -417,7 +489,7 @@ export function createTrustedContact(
 
 export function updateTrustedContact(
   id: string,
-  payload: Partial<Omit<TrustedContactItem, 'id' | 'created_at'>>
+  payload: Partial<Omit<TrustedContactItem, 'id' | 'created_at'>>,
 ): Promise<TrustedContactItem> {
   return apiRequest<TrustedContactItem>(`/journeys/contacts/${id}/`, {
     method: 'PATCH',
@@ -436,6 +508,8 @@ export function fetchJourneys(): Promise<{ count: number; results: JourneyItem[]
 export function startJourney(payload: {
   origin_label?: string;
   destination_label: string;
+  destination_latitude?: number | null;
+  destination_longitude?: number | null;
   expected_arrival_at: string;
   checkin_interval_minutes: number;
   location_sharing_enabled: boolean;
@@ -454,7 +528,7 @@ export function checkInJourney(
     note?: string;
     latitude?: number | null;
     longitude?: number | null;
-  }
+  },
 ): Promise<JourneyItem> {
   return apiRequest<JourneyItem>(`/journeys/${id}/checkin/`, {
     method: 'POST',
@@ -462,21 +536,51 @@ export function checkInJourney(
   });
 }
 
+export function postJourneyLocation(
+  id: string,
+  payload: { latitude: number; longitude: number; accuracy_m?: number | null },
+): Promise<{
+  id: string;
+  created_at: string;
+  distance_to_destination_m: number | null;
+  within_arrival_radius: boolean;
+}> {
+  return apiRequest(`/journeys/${id}/location/`, {
+    method: 'POST',
+    body: JSON.stringify({
+      latitude: Number(payload.latitude.toFixed(6)),
+      longitude: Number(payload.longitude.toFixed(6)),
+      accuracy_m: payload.accuracy_m ?? null,
+    }),
+  });
+}
+
 export function completeJourney(id: string): Promise<JourneyItem> {
   return apiRequest<JourneyItem>(`/journeys/${id}/complete/`, { method: 'POST' });
 }
 
+export function cancelJourney(id: string): Promise<JourneyItem> {
+  return apiRequest<JourneyItem>(`/journeys/${id}/cancel/`, { method: 'POST' });
+}
+
 export function stopJourneySharing(
   id: string,
-  endJourney = false
+  endJourney = false,
+  revokeLink = false,
 ): Promise<JourneyItem> {
   return apiRequest<JourneyItem>(`/journeys/${id}/stop-sharing/`, {
     method: 'POST',
-    body: JSON.stringify({ end_journey: endJourney }),
+    body: JSON.stringify({ end_journey: endJourney, revoke_link: revokeLink }),
   });
 }
 
-// --- Community Safety Reports & Rule-Based AI Intelligence ---
+export function fetchSharedJourneyStatus(token: string): Promise<SharedJourneySnapshot> {
+  return apiRequest<SharedJourneySnapshot>(`/journeys/shared/${encodeURIComponent(token)}/`, {
+    skipAuth: true,
+  });
+}
+
+// --- Community Safety Reports & Rule-Based Analysis ---
 
 export function fetchSafetyReports(params?: {
   category?: string;
@@ -522,7 +626,7 @@ export function fetchAdminReports(reviewStatus = 'ALL'): Promise<{
 export function reviewAdminReport(
   id: string,
   reviewStatus: SafetyReportReviewStatus,
-  adminNotes: string
+  adminNotes: string,
 ): Promise<SafetyReportItem> {
   return apiRequest<SafetyReportItem>(`/admin/reports/${id}/review/`, {
     method: 'PATCH',
@@ -589,7 +693,7 @@ export function createCompanionRequest(payload: {
 export function actOnCompanionRequest(
   id: string,
   action: 'accept' | 'decline' | 'complete' | 'cancel',
-  responseNote = ''
+  responseNote = '',
 ): Promise<CompanionRequestItem> {
   return apiRequest<CompanionRequestItem>(`/companions/requests/${id}/${action}/`, {
     method: 'POST',
@@ -598,7 +702,7 @@ export function actOnCompanionRequest(
 }
 
 export function fetchAdminCompanions(
-  statusFilter = 'ALL'
+  statusFilter = 'ALL',
 ): Promise<{ count: number; results: CompanionItem[] }> {
   const qs = statusFilter && statusFilter !== 'ALL' ? `?status=${statusFilter}` : '';
   return apiRequest(`/admin/companions/${qs}`);
@@ -606,7 +710,7 @@ export function fetchAdminCompanions(
 
 export function reviewAdminCompanion(
   id: string,
-  status: 'APPROVED' | 'REJECTED' | 'SUSPENDED'
+  status: 'APPROVED' | 'REJECTED' | 'SUSPENDED',
 ): Promise<CompanionItem> {
   return apiRequest<CompanionItem>(`/admin/companions/${id}/review/`, {
     method: 'POST',
@@ -616,4 +720,17 @@ export function reviewAdminCompanion(
 
 export function fetchAdminAnalytics(): Promise<AdminAnalyticsResponse> {
   return apiRequest<AdminAnalyticsResponse>('/admin/analytics/');
+}
+
+export function fetchAdminAuditLogs(params?: {
+  action?: string;
+  target_type?: string;
+}): Promise<{ count: number; results: AuditLogItem[] }> {
+  const query = new URLSearchParams();
+  if (params?.action) query.set('action', params.action);
+  if (params?.target_type && params.target_type !== 'ALL') {
+    query.set('target_type', params.target_type);
+  }
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return apiRequest(`/admin/audit-logs/${qs}`);
 }

@@ -17,18 +17,18 @@ import { ApiError } from '@/services/api';
 const demoAccounts = [
   {
     label: 'Woman Demo',
-    email: 'ananya@demo.safestop360.local',
-    password: 'DemoWoman@2026!',
+    email: 'woman@safestop.demo',
+    password: 'Woman@12345',
   },
   {
     label: 'Partner Demo',
-    email: 'partner@demo.safestop360.local',
-    password: 'DemoPartner@2026!',
+    email: 'partner@safestop.demo',
+    password: 'Partner@12345',
   },
   {
     label: 'Admin Demo',
-    email: 'admin@demo.safestop360.local',
-    password: 'DemoAdmin@2026!',
+    email: 'admin@safestop.demo',
+    password: 'Admin@12345',
   },
 ];
 

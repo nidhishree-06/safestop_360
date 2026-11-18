@@ -93,7 +93,7 @@ export type HelpRequestStatus =
   | 'CLOSED'
   | 'CANCELLED';
 
-export type JourneyStatus = 'ACTIVE' | 'OVERDUE' | 'COMPLETED' | 'CANCELLED';
+export type JourneyStatus = 'ACTIVE' | 'MISSED' | 'OVERDUE' | 'COMPLETED' | 'CANCELLED';
 
 export type SafetyReportCategory =
   | 'POOR_LIGHTING'
@@ -174,6 +174,13 @@ export interface HelpRequestFeedback {
   created_at: string;
 }
 
+export interface LiveLocationPoint {
+  lat: number;
+  lng: number;
+  accuracy_m: number | null;
+  updated_at: string;
+}
+
 export interface HelpRequestItem {
   id: string;
   requester: string;
@@ -187,10 +194,14 @@ export interface HelpRequestItem {
   partner_hours: string;
   partner_latitude: string | number;
   partner_longitude: string | number;
+  partner_is_demo?: boolean;
   status: HelpRequestStatus;
   status_display: string;
   note: string;
   partner_response_note: string;
+  share_live_location: boolean;
+  location_sharing_status?: 'ACTIVE' | 'STOPPED' | 'PENDING_ACCEPTANCE' | 'ENDED';
+  latest_location?: LiveLocationPoint | null;
   requester_latitude?: string | number | null;
   requester_longitude?: string | number | null;
   estimated_arrival_minutes?: number | null;
@@ -206,6 +217,7 @@ export interface HelpRequestItem {
 export interface HelpRequestCreatePayload {
   partner: string;
   note?: string;
+  share_live_location?: boolean;
   requester_latitude?: number | null;
   requester_longitude?: number | null;
   estimated_arrival_minutes?: number | null;
@@ -234,15 +246,29 @@ export interface JourneyCheckInItem {
   created_at: string;
 }
 
+export interface LocationPingItem {
+  id: string;
+  latitude: string | number;
+  longitude: string | number;
+  accuracy_m?: number | null;
+  created_at: string;
+}
+
 export interface JourneyItem {
   id: string;
   origin_label: string;
   destination_label: string;
+  destination_latitude?: string | number | null;
+  destination_longitude?: string | number | null;
   expected_arrival_at: string;
+  expected_checkin_at?: string | null;
   checkin_interval_minutes: number;
   status: JourneyStatus;
   status_display: string;
   location_sharing_enabled: boolean;
+  share_token?: string | null;
+  share_token_revoked?: boolean;
+  is_share_link_valid?: boolean;
   last_known_latitude?: string | number | null;
   last_known_longitude?: string | number | null;
   last_checkin_at?: string | null;
@@ -251,7 +277,89 @@ export interface JourneyItem {
   is_checkin_overdue: boolean;
   trusted_contacts: TrustedContactItem[];
   checkins: JourneyCheckInItem[];
+  recent_pings?: LocationPingItem[];
   created_at: string;
+}
+
+export interface SharedJourneySnapshot {
+  id: string;
+  traveler_name: string;
+  origin_label: string;
+  destination_label: string;
+  destination_latitude?: string | number | null;
+  destination_longitude?: string | number | null;
+  expected_arrival_at: string;
+  expected_checkin_at?: string | null;
+  status: JourneyStatus;
+  status_display: string;
+  location_sharing_enabled: boolean;
+  last_known_latitude?: string | number | null;
+  last_known_longitude?: string | number | null;
+  last_checkin_at?: string | null;
+  recent_pings: LocationPingItem[];
+  checkins: JourneyCheckInItem[];
+  updated_at: string;
+}
+
+export interface GeoSearchSuggestion {
+  display_name: string;
+  lat: number;
+  lng: number;
+  type: string;
+}
+
+export interface GeoSearchResponse {
+  query: string;
+  count: number;
+  results: GeoSearchSuggestion[];
+  unavailable: boolean;
+  detail?: string;
+}
+
+export interface GeoReverseResponse {
+  display_name: string;
+  lat: number;
+  lng: number;
+  unavailable: boolean;
+}
+
+export interface OsmPlaceItem {
+  id: string;
+  name: string;
+  category: PartnerCategory;
+  category_display: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+  opening_hours: string;
+  phone: string;
+  source: 'OSM_UNVERIFIED';
+  verified: false;
+  disclaimer: string;
+}
+
+export interface OsmPlacesResponse {
+  source: 'OSM_UNVERIFIED';
+  label: string;
+  count: number;
+  results: OsmPlaceItem[];
+  unavailable: boolean;
+  detail?: string;
+}
+
+export interface GeoRouteResponse {
+  profile: 'foot' | 'driving';
+  fallback: boolean;
+  fallback_reason: string;
+  distance_m: number;
+  duration_s: number;
+  geometry: {
+    type: 'LineString';
+    coordinates: [number, number][]; // [lng, lat]
+  };
+  google_maps_url: string;
+  osm_url: string;
 }
 
 export interface SafetyReportItem {
@@ -269,9 +377,10 @@ export interface SafetyReportItem {
   is_unreviewed: boolean;
   is_demo: boolean;
   ai_classification?: {
-    declared_category: string;
-    matched_themes: string[];
+    primary_theme: string;
+    themes: string[];
     matched_keywords: string[];
+    rationale: string;
   };
   admin_notes?: string;
   reviewed_by_name?: string | null;
@@ -279,46 +388,34 @@ export interface SafetyReportItem {
   created_at: string;
 }
 
-export interface SafetyClusterItem {
+export interface AnalysisClusterItem {
   cluster_id: string;
-  primary_area: string;
-  area_labels: string[];
-  city: string;
+  area_label: string;
   center_lat: number;
   center_lng: number;
+  radius_m: number;
   report_count: number;
-  unreviewed_count: number;
-  is_repeated_pattern: boolean;
-  dominant_category: SafetyReportCategory;
-  dominant_category_count: number;
-  category_breakdown: Record<string, number>;
+  recent_30d_count: number;
+  unverified_30d_count: number;
+  reviewed_count: number;
+  is_repeat_area: boolean;
+  primary_theme: string;
+  peak_time_window: string;
+  summary_statement: string;
+  explanation: string;
+  meets_public_threshold: boolean;
 }
 
 export interface SafetyIntelligenceSummary {
-  total_active_reports: number;
-  review_breakdown: {
-    unreviewed: number;
-    under_review: number;
-    reviewed: number;
-  };
-  category_distribution: Array<{
-    category: SafetyReportCategory;
-    label: string;
-    count: number;
-    percentage: number;
-  }>;
-  time_of_day_trends: Array<{
-    window: string;
-    count: number;
-  }>;
-  daily_frequency: Array<{
-    date: string;
-    count: number;
-  }>;
-  spatial_clusters: SafetyClusterItem[];
-  repeated_report_clusters: SafetyClusterItem[];
-  summary_notes: string[];
-  methodology_and_limitations: string;
+  total_reports_analyzed: number;
+  window_days: number;
+  cluster_radius_m: number;
+  repeat_areas_count: number;
+  non_claim_notice: string;
+  theme_breakdown: Array<{ theme: string; count: number }>;
+  time_of_day_trends: Array<{ window: string; count: number }>;
+  clusters: AnalysisClusterItem[];
+  public_map_clusters: AnalysisClusterItem[];
 }
 
 export interface CompanionItem {

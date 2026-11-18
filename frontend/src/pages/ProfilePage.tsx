@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from 'react';
-import { User, Phone, MapPin, Shield, Lock, Save } from 'lucide-react';
+import { User, Phone, MapPin, Shield, Lock, Save, Trash2 } from 'lucide-react';
 
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
+import { Switch } from '@/components/ui/Switch';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import { ApiError, changePassword } from '@/services/api';
+import { ApiError, changePassword, deleteMyLocationData } from '@/services/api';
 
 export function ProfilePage() {
   const { user, updateProfile } = useAuth();
@@ -15,10 +17,10 @@ export function ProfilePage() {
 
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [phone, setPhone] = useState(user?.profile?.phone || '');
-  const [city, setCity] = useState(user?.profile?.city || 'Bengaluru');
+  const [city, setCity] = useState(user?.profile?.city || 'Mysuru');
   const [emergencyNote, setEmergencyNote] = useState(user?.profile?.emergency_note || '');
   const [locationDefault, setLocationDefault] = useState(
-    Boolean(user?.profile?.location_sharing_default)
+    Boolean(user?.profile?.location_sharing_default),
   );
   const [savingProfile, setSavingProfile] = useState(false);
 
@@ -26,6 +28,9 @@ export function ProfilePage() {
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
   const [savingPw, setSavingPw] = useState(false);
+
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deletingLocation, setDeletingLocation] = useState(false);
 
   const handleProfileSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -82,10 +87,32 @@ export function ProfilePage() {
     }
   };
 
+  const handleDeleteLocationData = async () => {
+    setDeletingLocation(true);
+    try {
+      const res = await deleteMyLocationData();
+      sessionStorage.removeItem('safestop_last_location');
+      setDeleteModalOpen(false);
+      pushToast({
+        tone: 'success',
+        title: 'Location data deleted',
+        description: `${res.detail} (${res.deleted_pings} ping(s) purged).`,
+      });
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Failed to delete location data',
+        description: err instanceof ApiError ? err.message : 'Please try again.',
+      });
+    } finally {
+      setDeletingLocation(false);
+    }
+  };
+
   return (
     <DashboardLayout
       title="Profile & Privacy Settings"
-      subtitle="Manage your personal information, opt-in privacy defaults, and account security."
+      subtitle="Manage your personal details, opt-in GPS defaults, location data deletion, and security."
     >
       <div className="grid gap-6 lg:grid-cols-2">
         <Card surface="matte" className="p-6">
@@ -133,21 +160,14 @@ export function ProfilePage() {
               />
             </div>
 
-            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-border-soft bg-warm-white p-3.5">
-              <input
-                type="checkbox"
+            <div className="rounded-2xl border border-border-soft bg-warm-white p-3.5">
+              <Switch
                 checked={locationDefault}
-                onChange={(e) => setLocationDefault(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-[#68bfa3]"
+                onChange={setLocationDefault}
+                label="Pre-select opt-in location sharing for new journeys"
+                description="Location is never tracked silently and can always be turned off per request or journey."
               />
-              <span className="text-xs leading-relaxed text-charcoal-muted">
-                <strong className="block text-charcoal">
-                  Pre-select opt-in location sharing for new Journey Watch sessions
-                </strong>
-                Location is never tracked silently and can always be toggled off per
-                journey.
-              </span>
-            </label>
+            </div>
 
             <Button type="submit" variant="primary" disabled={savingProfile}>
               <Save className="h-4 w-4" aria-hidden="true" />
@@ -156,52 +176,99 @@ export function ProfilePage() {
           </form>
         </Card>
 
-        <Card surface="matte" className="h-fit p-6">
-          <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-mint-deep" aria-hidden="true" />
-            <h2 className="font-display text-lg font-bold text-charcoal">
-              Account Security
-            </h2>
-          </div>
-          <p className="mt-1 text-xs text-charcoal-muted">
-            Signed in as <strong>{user?.email}</strong> ({user?.role})
-          </p>
+        <div className="space-y-6">
+          <Card surface="matte" className="p-6">
+            <div className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-mint-deep" aria-hidden="true" />
+              <h2 className="font-display text-lg font-bold text-charcoal">
+                Account Security
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-charcoal-muted">
+              Signed in as <strong>{user?.email}</strong> ({user?.role})
+            </p>
 
-          <form onSubmit={handlePasswordSubmit} className="mt-5 space-y-4">
-            <Input
-              label="Current Password"
-              name="current_password"
-              type="password"
-              value={currentPw}
-              onChange={(e) => setCurrentPw(e.target.value)}
-              leftIcon={<Lock className="h-4 w-4" />}
-              required
-            />
-            <Input
-              label="New Password"
-              name="new_password"
-              type="password"
-              value={newPw}
-              onChange={(e) => setNewPw(e.target.value)}
-              leftIcon={<Lock className="h-4 w-4" />}
-              hint="Minimum 8 characters, avoiding common passwords."
-              required
-            />
-            <Input
-              label="Confirm New Password"
-              name="confirm_new_password"
-              type="password"
-              value={confirmPw}
-              onChange={(e) => setConfirmPw(e.target.value)}
-              leftIcon={<Lock className="h-4 w-4" />}
-              required
-            />
-            <Button type="submit" variant="secondary" disabled={savingPw}>
-              {savingPw ? 'Updating...' : 'Update Password'}
-            </Button>
-          </form>
-        </Card>
+            <form onSubmit={handlePasswordSubmit} className="mt-5 space-y-4">
+              <Input
+                label="Current Password"
+                name="current_password"
+                type="password"
+                value={currentPw}
+                onChange={(e) => setCurrentPw(e.target.value)}
+                leftIcon={<Lock className="h-4 w-4" />}
+                required
+              />
+              <Input
+                label="New Password"
+                name="new_password"
+                type="password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                leftIcon={<Lock className="h-4 w-4" />}
+                hint="Minimum 8 characters, avoiding common passwords."
+                required
+              />
+              <Input
+                label="Confirm New Password"
+                name="confirm_new_password"
+                type="password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                leftIcon={<Lock className="h-4 w-4" />}
+                required
+              />
+              <Button type="submit" variant="secondary" disabled={savingPw}>
+                {savingPw ? 'Updating...' : 'Update Password'}
+              </Button>
+            </form>
+          </Card>
+
+          <Card surface="matte" className="border-[var(--color-error)]/40 p-6">
+            <h2 className="font-display text-base font-bold text-charcoal">
+              Location Privacy Control
+            </h2>
+            <p className="mt-1 text-xs leading-relaxed text-charcoal-muted">
+              SafeStop 360 never exposes your live location publicly and deletes request/journey
+              pings automatically when sessions end. You can also erase all stored coordinates
+              immediately.
+            </p>
+            <div className="mt-4">
+              <Button
+                type="button"
+                variant="danger"
+                onClick={() => setDeleteModalOpen(true)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                Delete my location data
+              </Button>
+            </div>
+          </Card>
+        </div>
       </div>
+
+      <Modal
+        open={deleteModalOpen}
+        onClose={() => setDeleteModalOpen(false)}
+        title="Delete all stored location data?"
+        subtitle="This immediately purges all LocationPing records and saved coordinates on your journeys and help requests."
+      >
+        <p className="text-sm text-charcoal-muted">
+          Any active live location sharing will be switched off. Your account, trusted contacts,
+          and request summaries remain intact.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setDeleteModalOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            disabled={deletingLocation}
+            onClick={handleDeleteLocationData}
+          >
+            {deletingLocation ? 'Deleting...' : 'Yes, delete my location data'}
+          </Button>
+        </div>
+      </Modal>
     </DashboardLayout>
   );
 }

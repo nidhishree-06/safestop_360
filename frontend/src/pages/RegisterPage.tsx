@@ -37,7 +37,7 @@ export function RegisterPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [city, setCity] = useState('Bengaluru');
+  const [city, setCity] = useState('Mysuru');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -77,7 +77,7 @@ export function RegisterPage() {
         password,
         role,
         phone: phone.trim(),
-        city: city.trim() || 'Bengaluru',
+        city: city.trim() || 'Mysuru',
       });
       pushToast({
         tone: 'success',
@@ -198,7 +198,7 @@ export function RegisterPage() {
                 <Input
                   label="City"
                   name="city"
-                  placeholder="Bengaluru"
+                  placeholder="Mysuru"
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
                   leftIcon={<MapPin className="h-4 w-4" />}

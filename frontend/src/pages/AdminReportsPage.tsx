@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Brain, RefreshCw, CheckCircle2, AlertTriangle, Clock } from 'lucide-react';
+import { CheckCircle2, Info, Sparkles } from 'lucide-react';
 
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { Modal } from '@/components/ui/Modal';
+import { Badge, Button, Card, Chip, Skeleton } from '@/components/ui';
 import { useToast } from '@/context/ToastContext';
 import { ApiError, fetchAdminReports, reviewAdminReport } from '@/services/api';
 import type {
@@ -14,7 +11,7 @@ import type {
   SafetyReportReviewStatus,
 } from '@/types';
 
-const REVIEW_FILTERS: Array<'ALL' | SafetyReportReviewStatus> = [
+const STATUS_FILTERS: Array<'ALL' | SafetyReportReviewStatus> = [
   'ALL',
   'UNREVIEWED',
   'UNDER_REVIEW',
@@ -24,26 +21,23 @@ const REVIEW_FILTERS: Array<'ALL' | SafetyReportReviewStatus> = [
 
 export function AdminReportsPage() {
   const { pushToast } = useToast();
-  const [reports, setReports] = useState<SafetyReportItem[]>([]);
-  const [intelligence, setIntelligence] = useState<SafetyIntelligenceSummary | null>(null);
   const [filter, setFilter] = useState<'ALL' | SafetyReportReviewStatus>('ALL');
+  const [reports, setReports] = useState<SafetyReportItem[]>([]);
+  const [intel, setIntel] = useState<SafetyIntelligenceSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notesById, setNotesById] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [selectedReport, setSelectedReport] = useState<SafetyReportItem | null>(null);
-  const [nextStatus, setNextStatus] = useState<SafetyReportReviewStatus>('REVIEWED');
-  const [adminNotes, setAdminNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const loadData = useCallback(async () => {
+  const loadReports = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchAdminReports(filter);
       setReports(res.results);
-      setIntelligence(res.intelligence);
+      setIntel(res.intelligence);
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Could not load admin reports',
+        title: 'Could not load reports',
         description: err instanceof ApiError ? err.message : 'Check admin session.',
       });
     } finally {
@@ -52,320 +46,188 @@ export function AdminReportsPage() {
   }, [filter, pushToast]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    void loadReports();
+  }, [loadReports]);
 
-  const handleReviewSave = async () => {
-    if (!selectedReport) return;
-    setSaving(true);
+  const handleReview = async (id: string, nextStatus: SafetyReportReviewStatus) => {
+    setBusyId(id);
     try {
-      await reviewAdminReport(selectedReport.id, nextStatus, adminNotes.trim());
-      pushToast({
-        tone: 'success',
-        title: `Report marked ${nextStatus.replace(/_/g, ' ')}`,
-      });
-      setSelectedReport(null);
-      loadData();
+      await reviewAdminReport(id, nextStatus, notesById[id] || '');
+      pushToast({ tone: 'success', title: `Report marked ${nextStatus}` });
+      await loadReports();
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Review update failed',
-        description: err instanceof ApiError ? err.message : 'Try again.',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
     } finally {
-      setSaving(false);
+      setBusyId(null);
     }
   };
 
   return (
     <DashboardLayout
-      title="Safety Reports & Explainable AI Intelligence"
-      subtitle="Moderate community reports and inspect rule-based spatial clusters, category patterns, and time-of-day trends."
+      title="Safety Reports & Rule-Based Analysis"
+      subtitle="Moderate community safety observations and inspect transparent 300 m spatial clusters."
     >
-      {/* Explainable Rule-Based AI Safety Intelligence Section */}
-      {intelligence && (
-        <div className="grid gap-6 lg:grid-cols-12">
-          <Card surface="matte" className="space-y-4 p-6 lg:col-span-7">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Brain className="h-5 w-5 text-[#51379c]" />
-                <h2 className="font-display text-lg font-bold text-charcoal">
-                  Rule-Based Pattern Summary
-                </h2>
-              </div>
-              <Badge tone="violet">
-                {intelligence.total_active_reports} Active Report(s)
-              </Badge>
+      {intel && (
+        <Card className="space-y-4 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-mint-deep" />
+              <h2 className="font-display text-base font-bold text-charcoal">
+                Rule-Based Report Analysis ({intel.total_reports_analyzed} active reports)
+              </h2>
             </div>
+            <Badge tone="pink">{intel.repeat_areas_count} repeat area(s) within 300 m</Badge>
+          </div>
 
-            <ul className="space-y-2 text-sm text-charcoal">
-              {intelligence.summary_notes.map((note) => (
-                <li
-                  key={note}
-                  className="rounded-xl bg-warm-white px-3.5 py-2.5 text-xs leading-relaxed"
-                >
-                  {note}
-                </li>
-              ))}
-            </ul>
+          <p className="flex items-start gap-2 rounded-control bg-warm-white p-3 text-xs text-charcoal-muted">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-mint-deep" />
+            <span>{intel.non_claim_notice}</span>
+          </p>
 
-            {/* Category Distribution */}
-            <div className="space-y-2.5 pt-2">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
               <p className="text-xs font-bold uppercase tracking-wider text-charcoal-muted">
-                Category Distribution
+                Theme Breakdown
               </p>
-              {intelligence.category_distribution.map((row) => (
-                <div key={row.category} className="space-y-1 text-xs">
-                  <div className="flex justify-between font-medium">
-                    <span>{row.label}</span>
-                    <span className="tabular-nums text-charcoal-muted">
-                      {row.count} ({row.percentage}%)
-                    </span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-warm-surface">
-                    <div
-                      className="h-full rounded-full bg-mint-dark"
-                      style={{ width: `${Math.max(4, row.percentage)}%` }}
-                    />
-                  </div>
+              {intel.theme_breakdown.map((row) => (
+                <div
+                  key={row.theme}
+                  className="flex items-center justify-between rounded-control bg-warm-white px-3 py-1.5 text-xs"
+                >
+                  <span className="font-medium text-charcoal">{row.theme}</span>
+                  <span className="font-bold text-mint-deep tabular-nums">{row.count}</span>
                 </div>
               ))}
             </div>
-
-            <p className="rounded-2xl border border-border-soft bg-warm-white p-3.5 text-[11px] leading-relaxed text-charcoal-muted">
-              <strong>Transparency &amp; Limitations:</strong>{' '}
-              {intelligence.methodology_and_limitations}
-            </p>
-          </Card>
-
-          <div className="space-y-6 lg:col-span-5">
-            {/* Repeated Clusters */}
-            <Card surface="matte" className="space-y-3 p-6">
-              <h3 className="font-display text-base font-bold text-charcoal">
-                Repeated Nearby Clusters (≤ 500m)
-              </h3>
-              {intelligence.repeated_report_clusters.length === 0 ? (
-                <p className="text-xs text-charcoal-muted">
-                  No multi-report clusters currently detected within 500m.
-                </p>
-              ) : (
-                <div className="space-y-2.5">
-                  {intelligence.repeated_report_clusters.map((cluster) => (
-                    <div
-                      key={cluster.cluster_id}
-                      className="rounded-2xl border border-[var(--color-violet)]/35 bg-[var(--color-violet-soft)]/50 p-3.5 text-xs"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-charcoal">
-                          {cluster.primary_area}
-                        </span>
-                        <Badge tone="violet">{cluster.report_count} reports</Badge>
-                      </div>
-                      <p className="mt-1 text-charcoal-muted">
-                        Dominant: {cluster.dominant_category.replace(/_/g, ' ')} ·{' '}
-                        {cluster.unreviewed_count} unreviewed
-                      </p>
-                    </div>
-                  ))}
+            <div className="space-y-1.5">
+              <p className="text-xs font-bold uppercase tracking-wider text-charcoal-muted">
+                Time-of-Day Trends
+              </p>
+              {intel.time_of_day_trends.map((row) => (
+                <div
+                  key={row.window}
+                  className="flex items-center justify-between rounded-control bg-warm-white px-3 py-1.5 text-xs"
+                >
+                  <span className="font-medium text-charcoal">{row.window}</span>
+                  <span className="font-bold text-charcoal tabular-nums">{row.count}</span>
                 </div>
-              )}
-            </Card>
+              ))}
+            </div>
+          </div>
 
-            {/* Time-of-Day Trends */}
-            <Card surface="matte" className="space-y-3 p-6">
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-mint-deep" />
-                <h3 className="font-display text-base font-bold text-charcoal">
-                  Time-of-Day Report Trends
-                </h3>
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                {intelligence.time_of_day_trends.map((t) => (
+          {intel.clusters.length > 0 && (
+            <div className="space-y-2 border-t border-border-soft pt-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-charcoal-muted">
+                300 m Grouped Area Summaries
+              </p>
+              <div className="grid gap-2.5 md:grid-cols-2">
+                {intel.clusters.map((cluster) => (
                   <div
-                    key={t.window}
-                    className="rounded-2xl bg-warm-white p-3 text-center"
+                    key={cluster.cluster_id}
+                    className="rounded-control border border-border-soft bg-warm-white p-3 text-xs"
                   >
-                    <p className="font-display text-2xl font-extrabold text-charcoal tabular-nums">
-                      {t.count}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-charcoal">{cluster.area_label}</span>
+                      {cluster.is_repeat_area && <Badge tone="pink">Repeat</Badge>}
+                    </div>
+                    <p className="mt-1 font-semibold text-mint-deep">
+                      {cluster.summary_statement}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-charcoal-muted">{t.window}</p>
+                    <p className="mt-0.5 text-charcoal-muted">{cluster.explanation}</p>
                   </div>
                 ))}
               </div>
-            </Card>
-          </div>
-        </div>
+            </div>
+          )}
+        </Card>
       )}
 
-      {/* Report Moderation Table */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          {REVIEW_FILTERS.map((rf) => (
-            <button
-              key={rf}
-              type="button"
-              onClick={() => setFilter(rf)}
-              className={`neu-chip px-3.5 py-1.5 text-xs font-semibold ${
-                filter === rf ? 'neu-chip-active' : ''
-              }`}
-            >
-              {rf.replace(/_/g, ' ')}
-            </button>
-          ))}
-        </div>
-        <Button type="button" size="sm" variant="secondary" onClick={loadData}>
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+      {/* Filter Bar */}
+      <div className="flex flex-wrap gap-2">
+        {STATUS_FILTERS.map((st) => (
+          <Chip key={st} selected={filter === st} onClick={() => setFilter(st)}>
+            {st.replace('_', ' ')}
+          </Chip>
+        ))}
       </div>
 
-      <Card surface="matte" className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-border-soft bg-warm-white text-xs uppercase tracking-wider text-charcoal-muted">
-              <tr>
-                <th className="px-5 py-3.5 font-semibold">Area &amp; Observation</th>
-                <th className="px-4 py-3.5 font-semibold">Category &amp; AI Themes</th>
-                <th className="px-4 py-3.5 font-semibold">Review Status</th>
-                <th className="px-4 py-3.5 font-semibold">Submitted</th>
-                <th className="px-5 py-3.5 text-right font-semibold">Moderate</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border-soft">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-xs text-charcoal-muted">
-                    Loading safety reports...
-                  </td>
-                </tr>
-              ) : reports.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-xs text-charcoal-muted">
-                    No reports in this filter.
-                  </td>
-                </tr>
-              ) : (
-                reports.map((rep) => (
-                  <tr key={rep.id} className="hover:bg-warm-white/60">
-                    <td className="max-w-md px-5 py-4">
-                      <p className="font-display text-sm font-bold text-charcoal">
-                        {rep.area_label}
-                      </p>
-                      <p className="mt-0.5 text-xs text-charcoal-muted">{rep.description}</p>
-                    </td>
-                    <td className="px-4 py-4 text-xs">
-                      <p className="font-semibold text-charcoal">{rep.category_display}</p>
-                      <p className="text-[#51379c]">
-                        {rep.ai_classification?.matched_themes.join(', ')}
-                      </p>
-                    </td>
-                    <td className="px-4 py-4">
-                      <Badge
-                        tone={
-                          rep.review_status === 'REVIEWED'
-                            ? 'mint'
-                            : rep.review_status === 'UNDER_REVIEW'
-                              ? 'blue'
-                              : rep.review_status === 'DISMISSED'
-                                ? 'neutral'
-                                : 'warning'
-                        }
-                      >
-                        {rep.is_unreviewed ? (
-                          <AlertTriangle className="h-3 w-3" />
-                        ) : (
-                          <CheckCircle2 className="h-3 w-3" />
-                        )}
-                        {rep.review_status_display}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-4 text-xs text-charcoal-muted">
-                      {new Date(rep.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          setSelectedReport(rep);
-                          setNextStatus(
-                            rep.review_status === 'UNREVIEWED' ? 'REVIEWED' : rep.review_status
-                          );
-                          setAdminNotes(rep.admin_notes || '');
-                        }}
-                      >
-                        Review
-                      </Button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      {/* Reports Moderation Queue */}
+      {loading ? (
+        <Skeleton className="h-44 w-full" />
+      ) : (
+        <div className="space-y-3">
+          {reports.map((rep) => (
+            <Card key={rep.id} className="space-y-3 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge tone={rep.is_unreviewed ? 'warning' : 'mint'}>
+                    {rep.review_status_display}
+                  </Badge>
+                  <Badge tone="neutral">{rep.category_display}</Badge>
+                  {rep.is_demo && <Badge tone="violet">Demo</Badge>}
+                </div>
+                <span className="text-xs text-charcoal-muted">
+                  {new Date(rep.created_at).toLocaleString()}
+                </span>
+              </div>
 
-      <Modal
-        open={Boolean(selectedReport)}
-        onClose={() => setSelectedReport(null)}
-        title="Moderate Safety Report"
-        subtitle={selectedReport?.area_label}
-      >
-        <div className="space-y-4">
-          <p className="rounded-2xl bg-warm-white p-3.5 text-xs text-charcoal">
-            {selectedReport?.description}
-          </p>
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-charcoal">
-              Review Status
-            </label>
-            <select
-              value={nextStatus}
-              onChange={(e) =>
-                setNextStatus(e.target.value as SafetyReportReviewStatus)
-              }
-              className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
-            >
-              <option value="UNREVIEWED">Unreviewed</option>
-              <option value="UNDER_REVIEW">Under Review</option>
-              <option value="REVIEWED">Reviewed</option>
-              <option value="DISMISSED">Dismissed</option>
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-charcoal">
-              Administrator Notes
-            </label>
-            <textarea
-              rows={3}
-              value={adminNotes}
-              onChange={(e) => setAdminNotes(e.target.value)}
-              placeholder="Document review action or escalation notes..."
-              className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => setSelectedReport(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="primary"
-              disabled={saving}
-              onClick={handleReviewSave}
-            >
-              {saving ? 'Saving...' : 'Save Review'}
-            </Button>
-          </div>
+              <div>
+                <h3 className="font-display text-base font-bold text-charcoal">
+                  {rep.area_label} ({rep.city})
+                </h3>
+                <p className="mt-1 text-sm text-charcoal-muted">{rep.description}</p>
+                {rep.ai_classification && (
+                  <p className="mt-1.5 text-xs text-mint-deep">
+                    <strong>Matched themes:</strong> {rep.ai_classification.themes.join(', ')} ·{' '}
+                    {rep.ai_classification.rationale}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  placeholder="Optional admin moderation note..."
+                  value={notesById[rep.id] ?? rep.admin_notes ?? ''}
+                  onChange={(e) =>
+                    setNotesById((prev) => ({ ...prev, [rep.id]: e.target.value }))
+                  }
+                  className="neu-input-pill min-w-[220px] flex-1 px-3.5 py-2 text-xs text-charcoal"
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busyId === rep.id}
+                  onClick={() => void handleReview(rep.id, 'REVIEWED')}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Mark Reviewed
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busyId === rep.id}
+                  onClick={() => void handleReview(rep.id, 'UNDER_REVIEW')}
+                >
+                  Under Review
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busyId === rep.id}
+                  onClick={() => void handleReview(rep.id, 'DISMISSED')}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            </Card>
+          ))}
         </div>
-      </Modal>
+      )}
     </DashboardLayout>
   );
 }

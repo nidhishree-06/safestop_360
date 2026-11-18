@@ -39,9 +39,9 @@ export function PartnerEstablishmentPage() {
   const [description, setDescription] = useState('');
   const [address, setAddress] = useState('');
   const [area, setArea] = useState('');
-  const [city, setCity] = useState('Bengaluru');
-  const [latitude, setLatitude] = useState('12.971599');
-  const [longitude, setLongitude] = useState('77.594566');
+  const [city, setCity] = useState('Mysuru');
+  const [latitude, setLatitude] = useState('12.295800');
+  const [longitude, setLongitude] = useState('76.639400');
   const [contactPhone, setContactPhone] = useState('');
   const [operatingHours, setOperatingHours] = useState('24/7');
   const [servicesText, setServicesText] = useState(
@@ -56,9 +56,9 @@ export function PartnerEstablishmentPage() {
       setDescription('');
       setAddress('');
       setArea('');
-      setCity('Bengaluru');
-      setLatitude('12.971599');
-      setLongitude('77.594566');
+      setCity('Mysuru');
+      setLatitude('12.295800');
+      setLongitude('76.639400');
       setContactPhone('');
       setOperatingHours('24/7');
       setServicesText('Well-lit waiting space, Phone charging, Staff assistance');

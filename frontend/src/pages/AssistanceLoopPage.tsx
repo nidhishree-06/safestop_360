@@ -1,644 +1,824 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Radio,
+  Car,
   CheckCircle2,
-  MapPin,
-  Phone,
-  Navigation,
-  ExternalLink,
   Clock,
-  Star,
+  ExternalLink,
+  Footprints,
+  MapPin,
+  Navigation,
+  PhoneCall,
   RefreshCw,
-  XCircle,
   Send,
+  ShieldCheck,
+  Star,
+  StopCircle,
+  XCircle,
 } from 'lucide-react';
 
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { buildDirectionsUrl } from '@/components/map/SafePlacesMap';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { EmergencyBanner } from '@/components/ui/EmergencyBanner';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  GlassCard,
+  Modal,
+  Skeleton,
+  StatusTimeline,
+  Switch,
+  type TimelineStep,
+} from '@/components/ui';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { useGeolocation } from '@/hooks/useGeolocation';
+import {
+  createUserLocationIcon,
+  createVerifiedPartnerIcon,
+  formatDistance,
+  formatDuration,
+  MAP_TILE_ATTRIBUTION,
+  MAP_TILE_URL,
+  MYSURU_DEFAULT_CENTER,
+} from '@/lib/leaflet';
 import {
   ApiError,
   cancelHelpRequest,
   createHelpRequest,
   fetchHelpRequests,
   fetchNearbyPartners,
+  geoRoute,
   markHelpRequestArrived,
+  postHelpRequestLocation,
+  stopHelpRequestSharing,
   submitHelpRequestFeedback,
 } from '@/services/api';
-import type { HelpRequestItem, HelpRequestStatus, PartnerItem } from '@/types';
+import type { GeoRouteResponse, HelpRequestItem, HelpRequestStatus, PartnerItem } from '@/types';
 
 const ACTIVE_STATUSES: HelpRequestStatus[] = ['PENDING', 'ACCEPTED', 'ARRIVED'];
 
 function statusTone(
-  status: HelpRequestStatus
-): 'mint' | 'warning' | 'blue' | 'violet' | 'error' | 'neutral' {
-  switch (status) {
-    case 'PENDING':
-      return 'warning';
-    case 'ACCEPTED':
-      return 'mint';
-    case 'ARRIVED':
-      return 'blue';
-    case 'CLOSED':
-      return 'violet';
-    case 'DECLINED':
-    case 'EXPIRED':
-      return 'error';
-    default:
-      return 'neutral';
-  }
+  s: HelpRequestStatus,
+): 'mint' | 'warning' | 'error' | 'blue' | 'neutral' {
+  if (s === 'ACCEPTED' || s === 'ARRIVED' || s === 'CLOSED') return 'mint';
+  if (s === 'PENDING') return 'warning';
+  if (s === 'DECLINED' || s === 'EXPIRED' || s === 'CANCELLED') return 'error';
+  return 'neutral';
+}
+
+function buildSteps(req: HelpRequestItem): TimelineStep[] {
+  const cancelled =
+    req.status === 'CANCELLED' || req.status === 'DECLINED' || req.status === 'EXPIRED';
+  return [
+    {
+      id: 'sent',
+      label: 'Request Sent',
+      detail: new Date(req.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      state: 'completed',
+    },
+    {
+      id: 'accepted',
+      label: 'Partner Accepted',
+      detail: req.partner_response_note || (req.status === 'PENDING' ? 'Awaiting partner confirmation (10-min auto-expiry)' : undefined),
+      state:
+        req.status === 'PENDING'
+          ? 'current'
+          : cancelled
+            ? 'cancelled'
+            : 'completed',
+    },
+    {
+      id: 'arrived',
+      label: 'Arrival Confirmed',
+      detail: req.arrived_at
+        ? new Date(req.arrived_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : undefined,
+      state:
+        req.status === 'ACCEPTED'
+          ? 'current'
+          : req.status === 'ARRIVED' || req.status === 'CLOSED'
+            ? 'completed'
+            : 'upcoming',
+    },
+    {
+      id: 'closed',
+      label: 'Closed & Pings Purged',
+      detail: req.status === 'CLOSED' ? 'All temporary location pings deleted.' : undefined,
+      state:
+        req.status === 'ARRIVED'
+          ? 'current'
+          : req.status === 'CLOSED'
+            ? 'completed'
+            : 'upcoming',
+    },
+  ];
+}
+
+function RequestMapBounds({
+  points,
+}: {
+  points: [number, number][];
+}) {
+  const map = useMap();
+  useEffect(() => {
+    map.invalidateSize({ animate: false });
+    if (points.length >= 2) {
+      map.fitBounds(points, { padding: [44, 44], maxZoom: 16 });
+    } else if (points.length === 1) {
+      map.setView(points[0], 15);
+    }
+  }, [map, points]);
+  return null;
 }
 
 export function AssistanceLoopPage() {
   const { user } = useAuth();
   const { pushToast } = useToast();
-  const [searchParams] = useSearchParams();
+  const geo = useGeolocation();
 
   const [requests, setRequests] = useState<HelpRequestItem[]>([]);
   const [partners, setPartners] = useState<PartnerItem[]>([]);
-  const [selectedPartnerId, setSelectedPartnerId] = useState<string>(
-    searchParams.get('partner') || ''
-  );
-  const [note, setNote] = useState(user?.profile?.emergency_note || '');
-  const [etaMinutes, setEtaMinutes] = useState('10');
-  const [shareApproxLocation, setShareApproxLocation] = useState(false);
-
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [actionBusy, setActionBusy] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
 
-  // Feedback form state for latest closed request without feedback
+  // Quick request form
+  const [selectedPartnerId, setSelectedPartnerId] = useState('');
+  const [note, setNote] = useState(user?.profile?.emergency_note || '');
+  const [shareLive, setShareLive] = useState(true);
+  const [sending, setSending] = useState(false);
+
+  // Directions for ACCEPTED request
+  const [routeProfile, setRouteProfile] = useState<'foot' | 'driving'>('foot');
+  const [routeData, setRouteData] = useState<GeoRouteResponse | null>(null);
+
+  // Feedback modal
+  const [feedbackReq, setFeedbackReq] = useState<HelpRequestItem | null>(null);
   const [rating, setRating] = useState(5);
   const [feltSafe, setFeltSafe] = useState(true);
-  const [feedbackComment, setFeedbackComment] = useState('');
-  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [comment, setComment] = useState('');
+  const [savingFeedback, setSavingFeedback] = useState(false);
 
-  const originLat = Number(searchParams.get('lat')) || 12.978369;
-  const originLng = Number(searchParams.get('lng')) || 77.640836;
-
-  const loadData = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+  const loadData = useCallback(async () => {
     try {
-      const [reqRes, partnerRes] = await Promise.all([
+      const [reqRes, partRes] = await Promise.all([
         fetchHelpRequests(),
-        fetchNearbyPartners({ lat: originLat, lng: originLng, radius_km: 35 }),
+        fetchNearbyPartners({
+          lat: geo.coords?.lat ?? MYSURU_DEFAULT_CENTER.lat,
+          lng: geo.coords?.lng ?? MYSURU_DEFAULT_CENTER.lng,
+          radius_km: 15,
+          available_only: true,
+        }),
       ]);
       setRequests(reqRes.results);
-      const selectable = partnerRes.results.filter(
-        (p) => p.availability?.status !== 'OFFLINE'
-      );
-      setPartners(selectable);
-      setSelectedPartnerId((prev) => {
-        if (prev && selectable.some((p) => p.id === prev)) return prev;
-        return selectable[0]?.id || '';
-      });
+      setPartners(partRes.results);
+      setSelectedPartnerId((prev) => prev || partRes.results[0]?.id || '');
     } catch (err) {
-      if (!silent) {
-        pushToast({
-          tone: 'error',
-          title: 'Could not load assistance data',
-          description: err instanceof ApiError ? err.message : 'Check backend connection.',
-        });
-      }
+      pushToast({
+        tone: 'error',
+        title: 'Could not refresh requests',
+        description: err instanceof ApiError ? err.message : 'Check your connection.',
+      });
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
-  }, [originLat, originLng, pushToast]);
+  }, [geo.coords?.lat, geo.coords?.lng, pushToast]);
 
   useEffect(() => {
-    loadData(false);
+    void loadData();
   }, [loadData]);
 
   const activeRequest = useMemo(
     () => requests.find((r) => ACTIVE_STATUSES.includes(r.status)) || null,
-    [requests]
+    [requests],
+  );
+  const pastRequests = useMemo(
+    () => requests.filter((r) => !ACTIVE_STATUSES.includes(r.status)),
+    [requests],
   );
 
-  // Reliable 5-second live polling while an assistance request is active
+  // Poll every 5 s while an active request exists
   useEffect(() => {
     if (!activeRequest) return;
-    const interval = window.setInterval(() => {
-      loadData(true);
+    const id = window.setInterval(() => {
+      void fetchHelpRequests()
+        .then((res) => setRequests(res.results))
+        .catch(() => {});
     }, 5000);
-    return () => window.clearInterval(interval);
-  }, [activeRequest, loadData]);
+    return () => window.clearInterval(id);
+  }, [activeRequest]);
 
-  const handleSendRequest = async (event: FormEvent) => {
-    event.preventDefault();
-    setSendError(null);
-    if (!selectedPartnerId) {
-      setSendError('Please choose an approved, available SafeStop establishment.');
+  // Send live GPS pings every 12 s while ACCEPTED & share_live_location is enabled
+  useEffect(() => {
+    if (
+      !activeRequest ||
+      !activeRequest.share_live_location ||
+      (activeRequest.status !== 'PENDING' && activeRequest.status !== 'ACCEPTED') ||
+      !geo.coords
+    ) {
       return;
     }
 
+    const sendPing = () => {
+      if (!geo.coords) return;
+      void postHelpRequestLocation(activeRequest.id, {
+        latitude: geo.coords.lat,
+        longitude: geo.coords.lng,
+        accuracy_m: geo.coords.accuracy,
+      }).catch(() => {});
+    };
+
+    sendPing();
+    const interval = window.setInterval(sendPing, 12000);
+    return () => window.clearInterval(interval);
+  }, [activeRequest, geo.coords]);
+
+  // Fetch OSRM route once request is ACCEPTED
+  useEffect(() => {
+    if (!activeRequest || activeRequest.status !== 'ACCEPTED') {
+      setRouteData(null);
+      return;
+    }
+    const fromLat = geo.coords?.lat ?? Number(activeRequest.requester_latitude ?? MYSURU_DEFAULT_CENTER.lat);
+    const fromLng = geo.coords?.lng ?? Number(activeRequest.requester_longitude ?? MYSURU_DEFAULT_CENTER.lng);
+    const toLat = Number(activeRequest.partner_latitude);
+    const toLng = Number(activeRequest.partner_longitude);
+
+    void geoRoute({ fromLat, fromLng, toLat, toLng, profile: routeProfile })
+      .then(setRouteData)
+      .catch(() => setRouteData(null));
+  }, [activeRequest, geo.coords, routeProfile]);
+
+  const handleCreate = async () => {
+    if (!selectedPartnerId) return;
     setSending(true);
     try {
       const created = await createHelpRequest({
         partner: selectedPartnerId,
         note: note.trim(),
-        estimated_arrival_minutes: etaMinutes ? Number(etaMinutes) : null,
-        requester_latitude: shareApproxLocation ? Number(originLat.toFixed(6)) : null,
-        requester_longitude: shareApproxLocation ? Number(originLng.toFixed(6)) : null,
+        share_live_location: shareLive,
+        requester_latitude: shareLive && geo.coords ? Number(geo.coords.lat.toFixed(6)) : null,
+        requester_longitude: shareLive && geo.coords ? Number(geo.coords.lng.toFixed(6)) : null,
       });
       setRequests((prev) => [created, ...prev]);
       pushToast({
         tone: 'success',
-        title: 'Assistance request sent',
-        description: `Waiting for ${created.partner_name} to confirm readiness.`,
+        title: 'Help request sent',
+        description: `Waiting for ${created.partner_name} to accept.`,
       });
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : 'Failed to send request. No request was created—please try again or call 112.';
-      setSendError(message);
-      pushToast({ tone: 'error', title: 'Request not sent', description: message });
+      pushToast({
+        tone: 'error',
+        title: 'Unable to send request',
+        description: err instanceof ApiError ? err.message : 'Please try again.',
+      });
     } finally {
       setSending(false);
     }
   };
 
   const handleConfirmArrival = async (id: string) => {
-    setActionBusy(true);
+    setActing(true);
     try {
       const updated = await markHelpRequestArrived(id);
-      setRequests((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+      setRequests((prev) => prev.map((r) => (r.id === id ? updated : r)));
+      geo.stop();
       pushToast({
         tone: 'success',
         title: 'Arrival confirmed',
-        description: `${updated.partner_name} has been notified that you reached safely.`,
+        description: 'The partner can now close the request safely.',
       });
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Could not confirm arrival',
-        description: err instanceof ApiError ? err.message : 'Please try again.',
+        title: 'Action failed',
+        description: err instanceof ApiError ? err.message : 'Could not update status.',
       });
     } finally {
-      setActionBusy(false);
+      setActing(false);
     }
   };
 
   const handleCancel = async (id: string) => {
-    setActionBusy(true);
+    setActing(true);
     try {
       const updated = await cancelHelpRequest(id);
-      setRequests((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-      pushToast({ tone: 'info', title: 'Assistance request cancelled' });
+      setRequests((prev) => prev.map((r) => (r.id === id ? updated : r)));
+      geo.stop();
+      pushToast({
+        tone: 'info',
+        title: 'Request cancelled',
+        description: 'All temporary location pings for this request have been deleted.',
+      });
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Cancellation failed',
-        description: err instanceof ApiError ? err.message : 'Please try again.',
+        title: 'Cancel failed',
+        description: err instanceof ApiError ? err.message : 'Could not cancel request.',
       });
     } finally {
-      setActionBusy(false);
+      setActing(false);
     }
   };
 
-  const handleSubmitFeedback = async (id: string) => {
-    setSubmittingFeedback(true);
+  const handleStopSharing = async (id: string) => {
+    setActing(true);
     try {
-      const fb = await submitHelpRequestFeedback(id, {
+      const updated = await stopHelpRequestSharing(id);
+      setRequests((prev) => prev.map((r) => (r.id === id ? updated : r)));
+      geo.stop();
+      pushToast({
+        tone: 'info',
+        title: 'Location sharing stopped',
+        description: 'The partner now sees "Location sharing stopped" and all pings were deleted.',
+      });
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Could not stop sharing',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
+      });
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleFeedbackSubmit = async () => {
+    if (!feedbackReq) return;
+    setSavingFeedback(true);
+    try {
+      const fb = await submitHelpRequestFeedback(feedbackReq.id, {
         rating,
         felt_safe: feltSafe,
-        comment: feedbackComment.trim(),
+        comment: comment.trim(),
       });
       setRequests((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, feedback: fb } : r))
+        prev.map((r) => (r.id === feedbackReq.id ? { ...r, feedback: fb } : r)),
       );
-      setFeedbackComment('');
-      pushToast({
-        tone: 'success',
-        title: 'Thank you for your feedback',
-        description: 'Your feedback helps SafeStop 360 keep partner standards high.',
-      });
+      setFeedbackReq(null);
+      setComment('');
+      pushToast({ tone: 'success', title: 'Thank you for your feedback' });
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Could not save feedback',
+        title: 'Could not submit feedback',
         description: err instanceof ApiError ? err.message : 'Please try again.',
       });
     } finally {
-      setSubmittingFeedback(false);
+      setSavingFeedback(false);
     }
   };
 
-  const pendingFeedbackRequest = useMemo(
-    () => requests.find((r) => r.status === 'CLOSED' && !r.feedback) || null,
-    [requests]
-  );
+  const mapPoints = useMemo<[number, number][]>(() => {
+    if (!activeRequest) return [];
+    const pts: [number, number][] = [
+      [Number(activeRequest.partner_latitude), Number(activeRequest.partner_longitude)],
+    ];
+    if (geo.coords) {
+      pts.push([geo.coords.lat, geo.coords.lng]);
+    } else if (activeRequest.requester_latitude && activeRequest.requester_longitude) {
+      pts.push([
+        Number(activeRequest.requester_latitude),
+        Number(activeRequest.requester_longitude),
+      ]);
+    }
+    return pts;
+  }, [activeRequest, geo.coords]);
+
+  const routePositions = useMemo<[number, number][]>(() => {
+    if (!routeData?.geometry?.coordinates?.length) return [];
+    return routeData.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+  }, [routeData]);
 
   return (
     <DashboardLayout
       title="Assistance Confirmation Loop"
-      subtitle="Send a discreet request to a verified establishment, watch live partner confirmation, confirm arrival, and close the loop."
+      subtitle="Send a discreet request to a verified SafePlace, share live location strictly by opt-in consent, and confirm arrival."
     >
-      {/* Active Live Assistance Loop Panel (3D Glassmorphism showcase!) */}
-      <AnimatePresence mode="wait">
-        {activeRequest ? (
+      {loading ? (
+        <Card className="space-y-3 p-6">
+          <Skeleton className="h-6 w-1/3" />
+          <Skeleton className="h-44 w-full" />
+        </Card>
+      ) : activeRequest ? (
+        <AnimatePresence mode="wait">
           <motion.div
-            key={`${activeRequest.id}-${activeRequest.status}`}
+            key={activeRequest.status}
             initial={{ opacity: 0, y: 14, scale: 0.99 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.35 }}
+            transition={{ duration: 0.28 }}
+            className="grid gap-6 lg:grid-cols-12"
           >
-            <Card surface="glass-3d" className="space-y-5 p-6 sm:p-7">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <Badge tone={statusTone(activeRequest.status)}>
-                    <Radio className="h-3 w-3 animate-pulse" aria-hidden="true" />
-                    Status: {activeRequest.status}
-                  </Badge>
-                  <span className="text-xs font-medium text-charcoal-muted">
-                    Auto-updating every 5s
-                  </span>
-                </div>
-                <Button
+            {/* Status & Controls Panel */}
+            <Card
+              surface={activeRequest.status === 'ACCEPTED' ? 'glass-3d' : 'matte'}
+              className="space-y-5 p-6 lg:col-span-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Badge tone={statusTone(activeRequest.status)}>
+                  {activeRequest.status_display}
+                </Badge>
+                {activeRequest.partner_is_demo && <Badge tone="violet">Demo</Badge>}
+                <button
                   type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => loadData(false)}
+                  onClick={() => void loadData()}
+                  aria-label="Refresh request status"
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold text-charcoal-muted hover:bg-warm-surface"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  Refresh Now
-                </Button>
+                  Live polling
+                </button>
               </div>
 
-              {/* 4-Stage Progress Bar */}
-              <div className="grid grid-cols-4 gap-2 text-center text-[11px]">
-                {(['PENDING', 'ACCEPTED', 'ARRIVED', 'CLOSED'] as const).map((step, idx) => {
-                  const currentIdx = ['PENDING', 'ACCEPTED', 'ARRIVED', 'CLOSED'].indexOf(
-                    activeRequest.status
-                  );
-                  const reached = idx <= currentIdx;
-                  return (
-                    <div key={step} className="space-y-1.5">
-                      <div
-                        className={`h-2 rounded-full transition-colors ${
-                          reached ? 'bg-mint-dark' : 'bg-white/70'
-                        }`}
-                      />
-                      <span
-                        className={`block font-semibold ${
-                          reached ? 'text-charcoal' : 'text-charcoal-muted'
-                        }`}
-                      >
-                        {step}
-                      </span>
-                    </div>
-                  );
-                })}
+              <div>
+                <h2 className="font-display text-xl font-extrabold text-charcoal">
+                  {activeRequest.partner_name}
+                </h2>
+                <p className="mt-0.5 text-xs text-charcoal-muted">
+                  {activeRequest.partner_category} · {activeRequest.partner_address}
+                </p>
+                {activeRequest.partner_response_note && (
+                  <div className="mt-3 rounded-control border border-mint-dark/40 bg-mint-soft/70 p-3 text-xs text-mint-deep">
+                    <strong>Partner note:</strong> {activeRequest.partner_response_note}
+                  </div>
+                )}
               </div>
 
-              {/* State-specific dynamic card content */}
-              {activeRequest.status === 'PENDING' && (
-                <div className="rounded-2xl bg-white/80 p-5">
-                  <h2 className="font-display text-xl font-bold text-charcoal">
-                    Waiting for {activeRequest.partner_name} to confirm
-                  </h2>
-                  <p className="mt-1.5 text-sm text-charcoal-muted">
-                    Your discreet request is live on their partner console. You will see
-                    their confirmation, front-desk note, and direct route here as soon as
-                    they accept.
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-3">
+              <StatusTimeline steps={buildSteps(activeRequest)} />
+
+              {/* Live Location Consent Controls */}
+              <div className="rounded-control border border-border-soft bg-white/90 p-3.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-charcoal">Live location sharing</span>
+                  <Badge tone={activeRequest.share_live_location ? 'blue' : 'neutral'}>
+                    {activeRequest.share_live_location
+                      ? activeRequest.status === 'ACCEPTED'
+                        ? 'Active with partner'
+                        : 'Armed (shared after Accept)'
+                      : 'Stopped'}
+                  </Badge>
+                </div>
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {activeRequest.share_live_location && !geo.isWatching && (
+                    <Button size="sm" variant="secondary" onClick={() => geo.startWatching()}>
+                      <MapPin className="h-3.5 w-3.5" />
+                      Send live GPS updates
+                    </Button>
+                  )}
+                  {activeRequest.share_live_location && (
                     <Button
-                      type="button"
                       size="sm"
                       variant="danger"
-                      disabled={actionBusy}
-                      onClick={() => handleCancel(activeRequest.id)}
+                      disabled={acting}
+                      onClick={() => void handleStopSharing(activeRequest.id)}
                     >
-                      <XCircle className="h-3.5 w-3.5" />
-                      Cancel Request
+                      <StopCircle className="h-3.5 w-3.5" />
+                      Stop sharing
                     </Button>
-                    <Link to="/app/map">
-                      <Button type="button" size="sm" variant="secondary">
-                        View Other SafeStops
-                      </Button>
-                    </Link>
-                  </div>
+                  )}
                 </div>
-              )}
-
-              {activeRequest.status === 'ACCEPTED' && (
-                <div className="space-y-4 rounded-2xl border border-mint-dark/40 bg-white/88 p-5">
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-mint-soft text-mint-deep">
-                      <CheckCircle2 className="h-5 w-5" />
-                    </span>
-                    <div>
-                      <h2 className="font-display text-xl font-bold text-charcoal">
-                        Partner Confirmed! {activeRequest.partner_name} is ready for you
-                      </h2>
-                      <p className="mt-1 text-xs text-charcoal-muted">
-                        {activeRequest.partner_category} · {activeRequest.partner_address}
-                      </p>
-                      {activeRequest.partner_response_note && (
-                        <p className="mt-2 rounded-xl bg-mint-soft/60 px-3 py-2 text-xs font-medium text-mint-deep">
-                          Partner message: &ldquo;{activeRequest.partner_response_note}&rdquo;
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Button
-                      type="button"
-                      size="md"
-                      variant="primary"
-                      disabled={actionBusy}
-                      onClick={() => handleConfirmArrival(activeRequest.id)}
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {actionBusy ? 'Updating...' : 'I Have Arrived Safely'}
-                    </Button>
-
-                    <a
-                      href={buildDirectionsUrl(
-                        originLat,
-                        originLng,
-                        activeRequest.partner_latitude,
-                        activeRequest.partner_longitude
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Button type="button" size="md" variant="secondary">
-                        <Navigation className="h-4 w-4" />
-                        Open Directions
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </Button>
-                    </a>
-
-                    <a href={`tel:${activeRequest.partner_phone}`}>
-                      <Button type="button" size="md" variant="secondary">
-                        <Phone className="h-4 w-4" />
-                        {activeRequest.partner_phone}
-                      </Button>
-                    </a>
-
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={actionBusy}
-                      onClick={() => handleCancel(activeRequest.id)}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {activeRequest.status === 'ARRIVED' && (
-                <div className="rounded-2xl bg-white/85 p-5">
-                  <h2 className="font-display text-xl font-bold text-charcoal">
-                    Safe Arrival Recorded at {activeRequest.partner_name}
-                  </h2>
-                  <p className="mt-1.5 text-sm text-charcoal-muted">
-                    Take your time inside the verified SafeStop. Once you are ready to
-                    continue safely, staff at {activeRequest.partner_name} will mark the
-                    request completed.
-                  </p>
-                </div>
-              )}
-            </Card>
-          </motion.div>
-        ) : (
-          <motion.div
-            key="new-request-form"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <Card surface="matte" className="p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-charcoal">
-                    Send a Discreet Assistance Request
-                  </h2>
-                  <p className="text-xs text-charcoal-muted">
-                    Only administrator-approved, online establishments appear below.
-                  </p>
-                </div>
-                <Link to="/app/map">
-                  <Button type="button" size="sm" variant="secondary">
-                    <MapPin className="h-3.5 w-3.5" />
-                    Pick on Map
-                  </Button>
-                </Link>
               </div>
 
-              {sendError && (
-                <div
-                  role="alert"
-                  className="mt-4 rounded-2xl border border-[var(--color-error)] bg-[var(--color-error-soft)] px-4 py-3 text-xs font-medium text-[var(--color-error-deep)]"
+              {/* Action Buttons */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {activeRequest.status === 'ACCEPTED' && (
+                  <Button
+                    variant="primary"
+                    disabled={acting}
+                    onClick={() => void handleConfirmArrival(activeRequest.id)}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    I Have Arrived Safely
+                  </Button>
+                )}
+                {(activeRequest.status === 'PENDING' || activeRequest.status === 'ACCEPTED') && (
+                  <Button
+                    variant="danger"
+                    disabled={acting}
+                    onClick={() => void handleCancel(activeRequest.id)}
+                  >
+                    <XCircle className="h-4 w-4" />
+                    Cancel Request
+                  </Button>
+                )}
+                <a href={`tel:${activeRequest.partner_phone}`}>
+                  <Button variant="secondary" type="button">
+                    <PhoneCall className="h-4 w-4" />
+                    Call Desk
+                  </Button>
+                </a>
+              </div>
+            </Card>
+
+            {/* Live Map: Pulsing Pending Partner -> Route Draw on ACCEPTED */}
+            <div className="relative overflow-hidden rounded-card border border-border-soft bg-white shadow-elev-2 lg:col-span-7">
+              <div className="h-[440px] w-full">
+                <MapContainer
+                  center={[
+                    Number(activeRequest.partner_latitude),
+                    Number(activeRequest.partner_longitude),
+                  ]}
+                  zoom={15}
+                  className="h-full w-full"
                 >
-                  {sendError}
+                  <TileLayer url={MAP_TILE_URL} attribution={MAP_TILE_ATTRIBUTION} maxZoom={19} />
+                  <RequestMapBounds points={mapPoints} />
+
+                  <Marker
+                    position={[
+                      Number(activeRequest.partner_latitude),
+                      Number(activeRequest.partner_longitude),
+                    ]}
+                    icon={createVerifiedPartnerIcon(
+                      'OTHER',
+                      true,
+                      activeRequest.status === 'PENDING',
+                    )}
+                  >
+                    <Popup>
+                      <strong>{activeRequest.partner_name}</strong>
+                      <br />
+                      {activeRequest.partner_address}
+                    </Popup>
+                  </Marker>
+
+                  {(geo.coords ||
+                    (activeRequest.requester_latitude && activeRequest.requester_longitude)) && (
+                    <Marker
+                      position={[
+                        geo.coords?.lat ?? Number(activeRequest.requester_latitude),
+                        geo.coords?.lng ?? Number(activeRequest.requester_longitude),
+                      ]}
+                      icon={createUserLocationIcon()}
+                    >
+                      <Popup>Your location</Popup>
+                    </Marker>
+                  )}
+
+                  {routePositions.length >= 2 && (
+                    <Polyline
+                      positions={routePositions}
+                      pathOptions={
+                        routeData?.fallback
+                          ? { color: '#9A7BEA', weight: 4, dashArray: '8 8' }
+                          : { color: '#1A5C47', weight: 5 }
+                      }
+                    />
+                  )}
+                </MapContainer>
+              </div>
+
+              {/* Directions Overlay after ACCEPTED */}
+              {activeRequest.status === 'ACCEPTED' && routeData && (
+                <div className="absolute inset-x-3 bottom-3 z-[400]">
+                  <GlassCard className="p-3.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-mint-deep">
+                          Partner Confirmed — Route Ready
+                        </p>
+                        <p className="text-sm font-extrabold text-charcoal tabular-nums">
+                          {formatDistance(routeData.distance_m)},{' '}
+                          {formatDuration(routeData.duration_s, routeData.profile)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setRouteProfile('foot')}
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            routeProfile === 'foot'
+                              ? 'bg-mint text-mint-deep'
+                              : 'bg-white text-charcoal-muted'
+                          }`}
+                        >
+                          <Footprints className="h-3.5 w-3.5" />
+                          Walk
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRouteProfile('driving')}
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            routeProfile === 'driving'
+                              ? 'bg-mint text-mint-deep'
+                              : 'bg-white text-charcoal-muted'
+                          }`}
+                        >
+                          <Car className="h-3.5 w-3.5" />
+                          Drive
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <a
+                        href={routeData.google_maps_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-semibold text-charcoal ring-1 ring-border-soft"
+                      >
+                        Google Maps <ExternalLink className="h-3 w-3" />
+                      </a>
+                      <a
+                        href={routeData.osm_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-semibold text-charcoal ring-1 ring-border-soft"
+                      >
+                        OpenStreetMap <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  </GlassCard>
                 </div>
               )}
-
-              <form onSubmit={handleSendRequest} className="mt-5 space-y-4">
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <label className="block text-xs font-semibold text-charcoal">
-                      Select Verified SafeStop Partner
-                    </label>
-                    <select
-                      value={selectedPartnerId}
-                      onChange={(e) => setSelectedPartnerId(e.target.value)}
-                      className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
-                      required
-                    >
-                      {partners.length === 0 ? (
-                        <option value="">No available partners found</option>
-                      ) : (
-                        partners.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} ({p.area || p.city} · {p.availability?.status})
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-semibold text-charcoal">
-                      Est. Arrival (mins)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={120}
-                      value={etaMinutes}
-                      onChange={(e) => setEtaMinutes(e.target.value)}
-                      className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-charcoal">
-                    Optional Note for Partner Front Desk
-                  </label>
-                  <textarea
-                    rows={2}
-                    maxLength={320}
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    placeholder="e.g. Waiting for my ride, phone battery low, need a well-lit place to wait."
-                    className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
-                  />
-                </div>
-
-                <label className="flex cursor-pointer items-center gap-2.5 rounded-2xl bg-warm-white px-4 py-3 text-xs text-charcoal-muted">
-                  <input
-                    type="checkbox"
-                    checked={shareApproxLocation}
-                    onChange={(e) => setShareApproxLocation(e.target.checked)}
-                    className="h-4 w-4 accent-[#68bfa3]"
-                  />
-                  <span>
-                    Opt-in: Share my approximate starting coordinates ONLY with this
-                    selected partner during this active request.
-                  </span>
-                </label>
-
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="lg"
-                  disabled={sending || !selectedPartnerId}
-                >
-                  <Send className="h-4 w-4" aria-hidden="true" />
-                  {sending ? 'Sending Discreet Request...' : 'Send Assistance Request'}
-                </Button>
-              </form>
-            </Card>
+            </div>
           </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Optional Post-Completion Feedback Card */}
-      {pendingFeedbackRequest && (
-        <Card surface="matte" className="border-mint-dark/50 space-y-4 p-6">
+        </AnimatePresence>
+      ) : (
+        /* New Request Form */
+        <Card className="space-y-4 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <Badge tone="mint">Completed Support · Optional Feedback</Badge>
-              <h3 className="mt-2 font-display text-lg font-bold text-charcoal">
-                How was your experience at {pendingFeedbackRequest.partner_name}?
-              </h3>
+              <h2 className="font-display text-lg font-bold text-charcoal">
+                Send a New Assistance Request
+              </h2>
+              <p className="text-xs text-charcoal-muted">
+                Choose an available verified partner below or pick directly on the interactive map.
+              </p>
+            </div>
+            <Link to="/app/map">
+              <Button size="sm" variant="secondary">
+                <Navigation className="h-3.5 w-3.5" />
+                Pick on Map
+              </Button>
+            </Link>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <label htmlFor="partner-select" className="block text-xs font-semibold text-charcoal">
+                Verified Available SafePlace
+              </label>
+              <select
+                id="partner-select"
+                value={selectedPartnerId}
+                onChange={(e) => setSelectedPartnerId(e.target.value)}
+                className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal"
+              >
+                {partners.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.category_display}
+                    {typeof p.distance_km === 'number' ? ` · ${p.distance_km.toFixed(1)} km` : ''})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void geo.requestLocation()}
+              >
+                <MapPin className="h-4 w-4" />
+                {geo.coords
+                  ? `GPS Ready (within ${geo.coords.accuracy} m)`
+                  : 'Attach Current GPS (optional)'}
+              </Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-1.5">
-              {[1, 2, 3, 4, 5].map((star) => (
-                <button
-                  key={star}
-                  type="button"
-                  onClick={() => setRating(star)}
-                  aria-label={`Rate ${star} out of 5`}
-                  className={`rounded-full p-1.5 transition-colors ${
-                    star <= rating
-                      ? 'bg-mint-soft text-mint-deep'
-                      : 'bg-warm-surface text-charcoal-muted'
-                  }`}
-                >
-                  <Star className="h-4 w-4 fill-current" />
-                </button>
-              ))}
-            </div>
-            <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-charcoal">
-              <input
-                type="checkbox"
-                checked={feltSafe}
-                onChange={(e) => setFeltSafe(e.target.checked)}
-                className="h-4 w-4 accent-[#68bfa3]"
-              />
-              I felt safe and supported
-            </label>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              type="text"
-              value={feedbackComment}
-              onChange={(e) => setFeedbackComment(e.target.value)}
-              placeholder="Optional comment about the establishment's responsiveness..."
-              className="neu-input-pill flex-1 px-3.5 py-2 text-sm text-charcoal focus:outline-none"
+
+          <div className="rounded-control border border-mint-dark/40 bg-mint-soft/45 p-3.5">
+            <Switch
+              checked={shareLive}
+              onChange={setShareLive}
+              label="Share my live location with this place until the request closes"
+              description="Visible to the partner ONLY after they accept. Deleted automatically when closed, cancelled, declined, or expired."
             />
-            <Button
-              type="button"
-              size="md"
-              variant="primary"
-              disabled={submittingFeedback}
-              onClick={() => handleSubmitFeedback(pendingFeedbackRequest.id)}
-            >
-              {submittingFeedback ? 'Submitting...' : 'Submit Feedback'}
-            </Button>
           </div>
+
+          <textarea
+            rows={2}
+            maxLength={320}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional note for the SafeStop desk..."
+            className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal focus:outline-none"
+          />
+
+          <Button
+            variant="primary"
+            disabled={sending || !selectedPartnerId}
+            onClick={handleCreate}
+          >
+            <Send className="h-4 w-4" />
+            {sending ? 'Sending...' : 'Send Assistance Request'}
+          </Button>
         </Card>
       )}
 
-      {/* Request History */}
-      <Card surface="matte" className="space-y-4 p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-lg font-bold text-charcoal">
-            Assistance Request History
-          </h2>
-          <span className="text-xs text-charcoal-muted">{requests.length} total</span>
-        </div>
-
-        {loading ? (
-          <div className="h-24 animate-pulse rounded-2xl bg-warm-white" />
-        ) : requests.length === 0 ? (
-          <p className="text-sm text-charcoal-muted">
-            You have not sent any assistance requests yet.
-          </p>
+      {/* Past Requests History */}
+      <section className="space-y-3">
+        <h2 className="font-display text-lg font-bold text-charcoal">
+          Request History ({pastRequests.length})
+        </h2>
+        {pastRequests.length === 0 ? (
+          <EmptyState
+            icon={<ShieldCheck className="h-5 w-5" />}
+            title="No completed requests yet"
+            description="Completed, cancelled, or expired requests will appear here with optional feedback."
+          />
         ) : (
-          <div className="space-y-2.5">
-            {requests.map((req) => (
-              <div
-                key={req.id}
-                className="flex flex-col justify-between gap-2 rounded-2xl border border-border-soft bg-warm-white px-4 py-3.5 sm:flex-row sm:items-center"
-              >
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-display text-sm font-bold text-charcoal">
-                      {req.partner_name}
-                    </p>
-                    <Badge tone={statusTone(req.status)}>{req.status}</Badge>
-                    {req.feedback && (
-                      <Badge tone="mint">Rated {req.feedback.rating}/5</Badge>
-                    )}
-                  </div>
-                  <p className="mt-1 flex items-center gap-1.5 text-xs text-charcoal-muted">
-                    <Clock className="h-3 w-3" aria-hidden="true" />
-                    {new Date(req.created_at).toLocaleString()}
-                    {req.note ? ` · "${req.note}"` : ''}
-                  </p>
+          <div className="grid gap-3 md:grid-cols-2">
+            {pastRequests.map((item) => (
+              <Card key={item.id} className="space-y-2 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <Badge tone={statusTone(item.status)}>{item.status_display}</Badge>
+                  <span className="inline-flex items-center gap-1 text-xs text-charcoal-muted">
+                    <Clock className="h-3 w-3" />
+                    {new Date(item.created_at).toLocaleString()}
+                  </span>
                 </div>
-                {req.partner_response_note && (
-                  <p className="text-xs italic text-charcoal-muted">
-                    Partner: &ldquo;{req.partner_response_note}&rdquo;
+                <h3 className="font-display text-sm font-bold text-charcoal">
+                  {item.partner_name}
+                </h3>
+                {item.partner_response_note && (
+                  <p className="text-xs text-charcoal-muted">
+                    Desk note: {item.partner_response_note}
                   </p>
                 )}
-              </div>
+                {item.status === 'CLOSED' && !item.feedback && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      setFeedbackReq(item);
+                      setRating(5);
+                      setFeltSafe(true);
+                    }}
+                  >
+                    <Star className="h-3.5 w-3.5" />
+                    Leave Feedback
+                  </Button>
+                )}
+                {item.feedback && (
+                  <p className="text-xs font-semibold text-mint-deep">
+                    Rated {item.feedback.rating}/5 ·{' '}
+                    {item.feedback.felt_safe ? 'Felt safe' : 'Flagged for follow-up'}
+                  </p>
+                )}
+              </Card>
             ))}
           </div>
         )}
-      </Card>
+      </section>
 
-      <EmergencyBanner />
+      <Modal
+        open={feedbackReq !== null}
+        onClose={() => setFeedbackReq(null)}
+        title={`Feedback for ${feedbackReq?.partner_name || ''}`}
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                type="button"
+                aria-label={`Rate ${star} out of 5`}
+                onClick={() => setRating(star)}
+                className={`rounded-full p-2 ${
+                  star <= rating ? 'bg-mint text-mint-deep' : 'bg-warm-surface text-charcoal-muted'
+                }`}
+              >
+                <Star className="h-4 w-4 fill-current" />
+              </button>
+            ))}
+          </div>
+          <Switch
+            checked={feltSafe}
+            onChange={setFeltSafe}
+            label="I felt safe and supported at this SafeStop"
+          />
+          <textarea
+            rows={3}
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional feedback..."
+            className="neu-input-pill w-full px-3.5 py-2.5 text-sm text-charcoal"
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setFeedbackReq(null)}>
+              Cancel
+            </Button>
+            <Button disabled={savingFeedback} onClick={handleFeedbackSubmit}>
+              {savingFeedback ? 'Saving...' : 'Save Feedback'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </DashboardLayout>
   );
 }

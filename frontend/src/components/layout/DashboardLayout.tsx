@@ -142,7 +142,7 @@ export function DashboardLayout({
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-3 pb-16 pt-6 sm:px-6 lg:grid-cols-[248px_1fr]">
+      <div className="mx-auto grid max-w-7xl gap-6 px-3 pb-24 pt-6 sm:px-6 lg:grid-cols-[248px_1fr] lg:pb-16">
         {/* Desktop Matte Sidebar */}
         <aside className="hidden lg:block">
           <div className="surface-matte sticky top-24 space-y-5 p-4">
@@ -232,6 +232,37 @@ export function DashboardLayout({
           {children}
         </motion.main>
       </div>
+
+      {/* Mobile Floating Liquid-Glass Bottom Tab Bar */}
+      <nav
+        aria-label="Mobile quick navigation"
+        className="fixed inset-x-3 bottom-3 z-30 lg:hidden"
+      >
+        <div className="surface-glass grid grid-cols-4 gap-1 px-2 py-1.5 sm:grid-cols-5">
+          {items.slice(0, 5).map((item, idx) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={({ isActive }) =>
+                  `flex flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1.5 text-[10px] font-semibold transition-colors ${
+                    idx === 4 ? 'hidden sm:flex' : ''
+                  } ${
+                    isActive
+                      ? 'bg-mint-soft text-mint-deep'
+                      : 'text-charcoal-muted hover:text-charcoal'
+                  }`
+                }
+              >
+                <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="truncate max-w-full">{item.label.split(' ')[0]}</span>
+              </NavLink>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }

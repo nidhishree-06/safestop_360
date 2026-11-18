@@ -1,9 +1,11 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
 
 import { AuthProvider } from '@/context/AuthContext';
 import { ToastProvider } from '@/context/ToastContext';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { LandingPage } from '@/pages/LandingPage';
+import { DesignSystemPage } from '@/pages/DesignSystemPage';
+import { NotFoundPage } from '@/pages/NotFoundPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { RegisterPage } from '@/pages/RegisterPage';
 import { ResourcesPage } from '@/pages/ResourcesPage';
@@ -12,6 +14,7 @@ import { FindHelpPage } from '@/pages/FindHelpPage';
 import { WomanDashboardPage } from '@/pages/WomanDashboardPage';
 import { AssistanceLoopPage } from '@/pages/AssistanceLoopPage';
 import { JourneyWatchPage } from '@/pages/JourneyWatchPage';
+import { SharedJourneyPage } from '@/pages/SharedJourneyPage';
 import { SafetyReportsPage } from '@/pages/SafetyReportsPage';
 import { CompanionsPage } from '@/pages/CompanionsPage';
 import { PartnerDashboardPage } from '@/pages/PartnerDashboardPage';
@@ -29,10 +32,12 @@ export default function App() {
           <Routes>
             {/* Public Website */}
             <Route path="/" element={<LandingPage />} />
+            <Route path="/design-system" element={<DesignSystemPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/resources" element={<ResourcesPage />} />
             <Route path="/find-help" element={<FindHelpPage />} />
+            <Route path="/journey-status/:token" element={<SharedJourneyPage />} />
 
             {/* Authenticated Shared Profile */}
             <Route
@@ -146,7 +151,7 @@ export default function App() {
               }
             />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </AuthProvider>
       </ToastProvider>

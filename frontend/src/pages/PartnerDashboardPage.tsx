@@ -1,23 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
 import {
   Building2,
   CheckCircle2,
   Clock,
-  AlertTriangle,
-  Power,
-  Plus,
-  RefreshCw,
-  XCircle,
-  ShieldCheck,
+  MapPin,
   Radio,
+  RefreshCw,
+  ShieldCheck,
+  XCircle,
 } from 'lucide-react';
 
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
+import { Badge, Button, Card, EmptyState, Skeleton } from '@/components/ui';
 import { useToast } from '@/context/ToastContext';
+import {
+  createUserLocationIcon,
+  createVerifiedPartnerIcon,
+  MAP_TILE_ATTRIBUTION,
+  MAP_TILE_URL,
+} from '@/lib/leaflet';
 import {
   acceptHelpRequest,
   ApiError,
@@ -25,7 +28,6 @@ import {
   declineHelpRequest,
   fetchHelpRequests,
   fetchMyPartners,
-  markHelpRequestArrived,
   updatePartnerAvailability,
 } from '@/services/api';
 import type {
@@ -34,517 +36,399 @@ import type {
   PartnerOwnerItem,
 } from '@/types';
 
-const STATUS_OPTIONS: Array<{
-  value: PartnerAvailabilityStatus;
-  label: string;
-  desc: string;
-}> = [
-  { value: 'AVAILABLE', label: 'Available', desc: 'Ready to accept assistance requests' },
-  { value: 'BUSY', label: 'Busy', desc: 'Limited capacity; visible with Busy badge' },
-  { value: 'OFFLINE', label: 'Offline', desc: 'Paused; users cannot send new requests' },
+const STATUS_OPTIONS: Array<{ value: PartnerAvailabilityStatus; label: string }> = [
+  { value: 'AVAILABLE', label: 'Available' },
+  { value: 'BUSY', label: 'Busy' },
+  { value: 'OFFLINE', label: 'Offline' },
 ];
 
 export function PartnerDashboardPage() {
   const { pushToast } = useToast();
   const [partners, setPartners] = useState<PartnerOwnerItem[]>([]);
   const [requests, setRequests] = useState<HelpRequestItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [statusNote, setStatusNote] = useState('');
-  const [responseNotes, setResponseNotes] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [updatingAvail, setUpdatingAvail] = useState(false);
-  const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notesByReq, setNotesByReq] = useState<Record<string, string>>({});
 
-  const loadConsole = useCallback(
-    async (silent = false) => {
-      if (!silent) setLoading(true);
-      try {
-        const [partnerRes, reqRes] = await Promise.all([
-          fetchMyPartners(),
-          fetchHelpRequests(),
-        ]);
-        setPartners(partnerRes.results);
-        setRequests(reqRes.results);
-        if (partnerRes.results.length > 0) {
-          setSelectedId((prev) => {
-            const match =
-              partnerRes.results.find((p) => p.id === prev) || partnerRes.results[0];
-            if (!silent) setStatusNote(match.availability?.status_note || '');
-            return match.id;
-          });
-        }
-      } catch (err) {
-        if (!silent) {
-          pushToast({
-            tone: 'error',
-            title: 'Could not load partner console',
-            description: err instanceof ApiError ? err.message : 'Check backend connection.',
-          });
-        }
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [pushToast]
-  );
+  const loadAll = useCallback(async () => {
+    try {
+      const [pRes, rRes] = await Promise.all([fetchMyPartners(), fetchHelpRequests()]);
+      setPartners(pRes.results);
+      setRequests(rRes.results);
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Could not load partner dashboard',
+        description: err instanceof ApiError ? err.message : 'Check your connection.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [pushToast]);
 
   useEffect(() => {
-    loadConsole(false);
-    const interval = window.setInterval(() => loadConsole(true), 6000);
-    return () => window.clearInterval(interval);
-  }, [loadConsole]);
+    void loadAll();
+  }, [loadAll]);
 
-  const activePartner = partners.find((p) => p.id === selectedId) || null;
+  // Poll every 10 s for incoming requests & live accepted requester pings
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void fetchHelpRequests()
+        .then((res) => setRequests(res.results))
+        .catch(() => {});
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  const incomingRequests = useMemo(
-    () => requests.filter((r) => r.status === 'PENDING'),
-    [requests]
-  );
-  const activeRequests = useMemo(
-    () => requests.filter((r) => r.status === 'ACCEPTED' || r.status === 'ARRIVED'),
-    [requests]
-  );
-  const historyRequests = useMemo(
-    () =>
-      requests.filter(
-        (r) => !['PENDING', 'ACCEPTED', 'ARRIVED'].includes(r.status)
-      ),
-    [requests]
-  );
-
-  const handleAvailabilityChange = async (nextStatus: PartnerAvailabilityStatus) => {
-    if (!activePartner) return;
-    setUpdatingAvail(true);
+  const handleAvailability = async (partner: PartnerOwnerItem, next: PartnerAvailabilityStatus) => {
+    setBusyId(partner.id);
     try {
-      const res = await updatePartnerAvailability(
-        activePartner.id,
-        nextStatus,
-        statusNote.trim()
-      );
+      const res = await updatePartnerAvailability(partner.id, next);
       setPartners((prev) =>
-        prev.map((p) =>
-          p.id === activePartner.id ? { ...p, availability: res.availability } : p
-        )
+        prev.map((p) => (p.id === partner.id ? { ...p, availability: res.availability } : p)),
       );
       pushToast({
         tone: 'success',
-        title: `Availability set to ${nextStatus}`,
-        description: `${activePartner.name} is now ${nextStatus.toLowerCase()}.`,
+        title: `${partner.name} set to ${next}`,
       });
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Availability update rejected',
-        description: err instanceof ApiError ? err.message : 'Unable to update status.',
+        title: 'Could not update availability',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
     } finally {
-      setUpdatingAvail(false);
+      setBusyId(null);
     }
   };
 
-  const runRequestAction = async (
-    id: string,
-    action: 'accept' | 'decline' | 'arrived' | 'close'
+  const handleRequestAction = async (
+    reqId: string,
+    action: 'accept' | 'decline' | 'close',
   ) => {
-    setBusyRequestId(id);
-    const note = (responseNotes[id] || '').trim();
+    setBusyId(reqId);
+    const note = notesByReq[reqId] || '';
     try {
-      let updated: HelpRequestItem;
-      if (action === 'accept') {
-        updated = await acceptHelpRequest(id, note || 'Front desk staff ready to assist.');
-      } else if (action === 'decline') {
-        updated = await declineHelpRequest(id, note || 'Unable to accommodate right now.');
-      } else if (action === 'arrived') {
-        updated = await markHelpRequestArrived(id);
-      } else {
-        updated = await closeHelpRequest(id, note || 'Assistance completed safely.');
-      }
-      setRequests((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+      const updated =
+        action === 'accept'
+          ? await acceptHelpRequest(reqId, note)
+          : action === 'decline'
+            ? await declineHelpRequest(reqId, note)
+            : await closeHelpRequest(reqId, note);
+      setRequests((prev) => prev.map((r) => (r.id === reqId ? updated : r)));
       pushToast({
         tone: 'success',
-        title: `Request ${updated.status}`,
-        description: `Status updated for ${updated.requester_name}.`,
+        title: `Request ${updated.status_display}`,
+        description:
+          action === 'close'
+            ? 'Session closed and all requester location pings deleted.'
+            : undefined,
       });
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Action failed',
-        description: err instanceof ApiError ? err.message : 'Please try again.',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
     } finally {
-      setBusyRequestId(null);
+      setBusyId(null);
     }
   };
 
+  const approvedPartners = partners.filter((p) => p.verification_status === 'APPROVED');
+  const pendingPartners = partners.filter((p) => p.verification_status === 'PENDING');
+  const activeRequests = requests.filter((r) =>
+    ['PENDING', 'ACCEPTED', 'ARRIVED'].includes(r.status),
+  );
+  const pastRequests = requests.filter(
+    (r) => !['PENDING', 'ACCEPTED', 'ARRIVED'].includes(r.status),
+  );
+
   return (
     <DashboardLayout
-      title="Partner Operational Console"
-      subtitle="Manage live availability, accept incoming assistance requests swiftly, and track completed support."
+      title="Partner Operations Console"
+      subtitle="Manage SafePlace availability, respond to incoming help requests, and monitor accepted live arrivals."
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          {partners.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => {
-                setSelectedId(p.id);
-                setStatusNote(p.availability?.status_note || '');
-              }}
-              className={`neu-chip px-3.5 py-1.5 text-xs font-semibold ${
-                p.id === selectedId ? 'neu-chip-active' : ''
-              }`}
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button type="button" size="sm" variant="secondary" onClick={() => loadConsole(false)}>
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-          <Link to="/partner/establishment">
-            <Button type="button" size="sm" variant="primary">
-              <Plus className="h-3.5 w-3.5" />
-              {partners.length > 0 ? 'Manage Establishment' : 'Register Establishment'}
-            </Button>
-          </Link>
-        </div>
-      </div>
-
       {loading ? (
-        <div className="surface-matte h-48 animate-pulse p-6" />
-      ) : !activePartner ? (
-        <Card surface="matte" className="space-y-4 p-8 text-center">
-          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-mint-soft text-mint-deep">
-            <Building2 className="h-6 w-6" />
-          </span>
-          <h2 className="font-display text-xl font-bold text-charcoal">
-            Register your SafeStop establishment
+        <div className="space-y-4">
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+      ) : partners.length === 0 ? (
+        <EmptyState
+          icon={<Building2 className="h-6 w-6" />}
+          title="Register your SafeStop establishment"
+          description="Submit your business address, map pin, and contact desk details. Once approved by an administrator, you will appear on the verified map."
+          action={
+            <Link to="/partner/establishment">
+              <Button>Set Up Establishment Location</Button>
+            </Link>
+          }
+        />
+      ) : approvedPartners.length === 0 && pendingPartners.length > 0 ? (
+        /* Dedicated Pending-Approval Screen */
+        <Card className="space-y-4 p-8 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--color-warning-soft)] text-[var(--color-warning-deep)]">
+            <Clock className="h-7 w-7" />
+          </div>
+          <Badge tone="warning">Pending Administrator Approval</Badge>
+          <h2 className="font-display text-2xl font-extrabold text-charcoal">
+            Your establishment is under verification review
           </h2>
-          <p className="mx-auto max-w-md text-sm text-charcoal-muted">
-            Submit your establishment details for administrator approval before accepting
-            live assistance requests.
+          <p className="mx-auto max-w-lg text-sm text-charcoal-muted">
+            SafeStop 360 manually verifies every partner before listing them on the public map or
+            enabling incoming help requests.
           </p>
-          <Link to="/partner/establishment">
-            <Button variant="primary" size="md" type="button">
-              Submit Establishment
-            </Button>
-          </Link>
+          <div className="mx-auto max-w-md space-y-2 text-left">
+            {pendingPartners.map((p) => (
+              <div
+                key={p.id}
+                className="rounded-control border border-border-soft bg-warm-white p-3.5 text-xs"
+              >
+                <p className="font-bold text-charcoal">{p.name}</p>
+                <p className="text-charcoal-muted">{p.address}</p>
+              </div>
+            ))}
+          </div>
+          <div className="pt-2">
+            <Link to="/partner/establishment">
+              <Button variant="secondary">Review or Update Location Details</Button>
+            </Link>
+          </div>
         </Card>
       ) : (
         <div className="space-y-6">
-          {/* Verification Status Banner */}
-          <Card
-            surface="matte"
-            className={`flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center ${
-              activePartner.verification_status === 'APPROVED'
-                ? 'border-mint-dark/50'
-                : 'border-[var(--color-warning)]'
-            }`}
-          >
-            <div className="flex items-start gap-3">
-              <span
-                className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${
-                  activePartner.verification_status === 'APPROVED'
-                    ? 'bg-mint-soft text-mint-deep'
-                    : 'bg-[var(--color-warning-soft)] text-[var(--color-warning-deep)]'
-                }`}
-              >
-                {activePartner.verification_status === 'APPROVED' ? (
-                  <CheckCircle2 className="h-5 w-5" />
-                ) : (
-                  <AlertTriangle className="h-5 w-5" />
-                )}
-              </span>
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-display text-lg font-bold text-charcoal">
-                    {activePartner.name}
-                  </h2>
-                  <Badge
-                    tone={
-                      activePartner.verification_status === 'APPROVED'
-                        ? 'mint'
-                        : activePartner.verification_status === 'PENDING'
-                          ? 'warning'
-                          : 'error'
-                    }
-                  >
-                    {activePartner.verification_status}
-                  </Badge>
-                </div>
-                <p className="mt-0.5 text-xs text-charcoal-muted">
-                  {activePartner.category_display} · {activePartner.address}
-                </p>
-              </div>
-            </div>
-            <Link to="/partner/establishment">
-              <Button size="sm" variant="secondary" type="button">
-                Edit Details
-              </Button>
-            </Link>
-          </Card>
-
-          {/* Operational Incoming Assistance Requests Queue */}
-          <Card surface="matte" className="space-y-4 p-6">
+          {/* Establishment Availability Controls */}
+          <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Radio className="h-5 w-5 text-mint-deep" aria-hidden="true" />
-                <h3 className="font-display text-lg font-bold text-charcoal">
-                  Incoming Assistance Requests ({incomingRequests.length})
-                </h3>
+              <h2 className="font-display text-lg font-bold text-charcoal">
+                My Verified Establishments ({approvedPartners.length})
+              </h2>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => void loadAll()}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Refresh
+                </Button>
+                <Link to="/partner/establishment">
+                  <Button size="sm" variant="secondary">
+                    Manage Locations
+                  </Button>
+                </Link>
               </div>
-              <Badge tone="mint">Live polling · 6s</Badge>
             </div>
 
-            {incomingRequests.length === 0 ? (
-              <p className="rounded-2xl bg-warm-white p-4 text-sm text-charcoal-muted">
-                No pending requests right now. New requests will appear here automatically.
-              </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              {partners.map((partner) => {
+                const current = partner.availability?.status || 'OFFLINE';
+                const approved = partner.verification_status === 'APPROVED';
+                return (
+                  <Card key={partner.id} className="space-y-3 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <Badge tone={approved ? 'mint' : 'warning'}>
+                          {partner.verification_status_display || partner.verification_status}
+                        </Badge>
+                        {partner.is_demo && <Badge tone="violet">Demo</Badge>}
+                      </div>
+                      <span className="text-xs text-charcoal-muted">
+                        {partner.category_display}
+                      </span>
+                    </div>
+                    <div>
+                      <h3 className="font-display text-base font-bold text-charcoal">
+                        {partner.name}
+                      </h3>
+                      <p className="text-xs text-charcoal-muted">{partner.address}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {STATUS_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          disabled={!approved || busyId === partner.id}
+                          onClick={() => void handleAvailability(partner, opt.value)}
+                          className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors disabled:opacity-45 ${
+                            current === opt.value
+                              ? opt.value === 'AVAILABLE'
+                                ? 'bg-mint text-mint-deep'
+                                : opt.value === 'BUSY'
+                                  ? 'bg-[var(--color-warning)] text-[var(--color-warning-deep)]'
+                                  : 'bg-charcoal text-white'
+                              : 'bg-warm-surface text-charcoal-muted hover:text-charcoal'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Active Incoming Requests */}
+          <section className="space-y-3">
+            <h2 className="font-display text-lg font-bold text-charcoal">
+              Incoming &amp; Active Requests ({activeRequests.length})
+            </h2>
+            {activeRequests.length === 0 ? (
+              <EmptyState
+                icon={<ShieldCheck className="h-5 w-5" />}
+                title="No active requests right now"
+                description="Incoming assistance requests will appear here automatically (refreshed every 10 seconds)."
+              />
             ) : (
-              <div className="space-y-3">
-                {incomingRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="space-y-3 rounded-2xl border border-[var(--color-warning)] bg-[var(--color-warning-soft)]/45 p-5"
-                  >
+              <div className="space-y-4">
+                {activeRequests.map((req) => (
+                  <Card key={req.id} className="space-y-4 p-5">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <Badge tone="warning">PENDING</Badge>
-                          <span className="font-display text-base font-bold text-charcoal">
-                            {req.requester_name}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone={req.status === 'PENDING' ? 'warning' : 'mint'}>
+                            {req.status_display}
+                          </Badge>
+                          <span className="text-xs text-charcoal-muted">
+                            {new Date(req.created_at).toLocaleTimeString()}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-charcoal-muted">
-                          For: <strong>{req.partner_name}</strong> ·{' '}
-                          {new Date(req.created_at).toLocaleTimeString()}
-                          {req.estimated_arrival_minutes
-                            ? ` · Est. ${req.estimated_arrival_minutes} min away`
-                            : ''}
-                        </p>
+                        <h3 className="mt-2 font-display text-base font-bold text-charcoal">
+                          {req.requester_name || 'SafeStop User'} → {req.partner_name}
+                        </h3>
                         {req.note && (
-                          <p className="mt-2 rounded-xl bg-white/90 px-3 py-2 text-xs text-charcoal">
-                            Note: &ldquo;{req.note}&rdquo;
-                          </p>
+                          <p className="mt-1 text-sm text-charcoal-muted">Note: {req.note}</p>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-2 sm:flex-row">
+                    {/* Approximate live requester position map — ONLY after ACCEPTED */}
+                    {req.status === 'ACCEPTED' && (
+                      <div className="rounded-control border border-border-soft bg-warm-white p-3.5">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-charcoal">
+                            <Radio className="h-3.5 w-3.5 text-mint-deep" />
+                            Requester Approximate Position
+                          </span>
+                          <Badge tone={req.latest_location ? 'blue' : 'neutral'}>
+                            {req.latest_location
+                              ? `Updated ${new Date(req.latest_location.updated_at).toLocaleTimeString()}`
+                              : 'Location sharing stopped'}
+                          </Badge>
+                        </div>
+                        {req.latest_location ? (
+                          <div className="h-52 w-full overflow-hidden rounded-control border border-border-soft">
+                            <MapContainer
+                              center={[req.latest_location.lat, req.latest_location.lng]}
+                              zoom={15}
+                              className="h-full w-full"
+                            >
+                              <TileLayer
+                                url={MAP_TILE_URL}
+                                attribution={MAP_TILE_ATTRIBUTION}
+                                maxZoom={19}
+                              />
+                              <Marker
+                                position={[req.latest_location.lat, req.latest_location.lng]}
+                                icon={createUserLocationIcon()}
+                              >
+                                <Popup>Requester approximate location</Popup>
+                              </Marker>
+                              <Marker
+                                position={[
+                                  Number(req.partner_latitude),
+                                  Number(req.partner_longitude),
+                                ]}
+                                icon={createVerifiedPartnerIcon('OTHER', true)}
+                              >
+                                <Popup>{req.partner_name}</Popup>
+                              </Marker>
+                            </MapContainer>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-charcoal-muted">
+                            <MapPin className="mr-1 inline h-3.5 w-3.5" />
+                            Location sharing stopped (or not opted in). Wait at your reception desk
+                            until arrival is confirmed.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
                       <input
                         type="text"
-                        value={responseNotes[req.id] || ''}
+                        placeholder="Optional response note (e.g. Front desk is open for you)"
+                        value={notesByReq[req.id] || ''}
                         onChange={(e) =>
-                          setResponseNotes((prev) => ({
-                            ...prev,
-                            [req.id]: e.target.value,
-                          }))
+                          setNotesByReq((prev) => ({ ...prev, [req.id]: e.target.value }))
                         }
-                        placeholder="Optional message to requester (e.g., Front desk ready at entrance)"
-                        className="neu-input-pill flex-1 px-3.5 py-2 text-xs text-charcoal focus:outline-none"
+                        className="neu-input-pill min-w-[220px] flex-1 px-3.5 py-2 text-xs text-charcoal"
                       />
-                      <div className="flex gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="primary"
-                          disabled={busyRequestId === req.id}
-                          onClick={() => runRequestAction(req.id, 'accept')}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          Accept
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="danger"
-                          disabled={busyRequestId === req.id}
-                          onClick={() => runRequestAction(req.id, 'decline')}
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          Decline
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-
-          {/* Active En-Route / Arrived Support */}
-          {activeRequests.length > 0 && (
-            <Card surface="matte" className="border-mint-dark/50 space-y-4 p-6">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-mint-deep" />
-                <h3 className="font-display text-lg font-bold text-charcoal">
-                  Active Assistance In Progress ({activeRequests.length})
-                </h3>
-              </div>
-              <div className="space-y-3">
-                {activeRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="flex flex-col justify-between gap-3 rounded-2xl border border-border-soft bg-warm-white p-4 sm:flex-row sm:items-center"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Badge tone={req.status === 'ARRIVED' ? 'blue' : 'mint'}>
-                          {req.status}
-                        </Badge>
-                        <span className="font-display text-sm font-bold text-charcoal">
-                          {req.requester_name}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-charcoal-muted">
-                        {req.partner_name}
-                        {req.note ? ` · "${req.note}"` : ''}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {req.status === 'ACCEPTED' && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          disabled={busyRequestId === req.id}
-                          onClick={() => runRequestAction(req.id, 'arrived')}
-                        >
-                          Mark Arrived
-                        </Button>
+                      {req.status === 'PENDING' && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            disabled={busyId === req.id}
+                            onClick={() => void handleRequestAction(req.id, 'accept')}
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Accept
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            disabled={busyId === req.id}
+                            onClick={() => void handleRequestAction(req.id, 'decline')}
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            Decline
+                          </Button>
+                        </>
                       )}
                       {req.status === 'ARRIVED' && (
                         <Button
-                          type="button"
                           size="sm"
                           variant="primary"
-                          disabled={busyRequestId === req.id}
-                          onClick={() => runRequestAction(req.id, 'close')}
+                          disabled={busyId === req.id}
+                          onClick={() => void handleRequestAction(req.id, 'close')}
                         >
                           <CheckCircle2 className="h-3.5 w-3.5" />
-                          Mark Completed
+                          Close Request Safely
                         </Button>
                       )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {/* Operational Availability Toggle */}
-          <Card surface="matte" className="space-y-4 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Power className="h-5 w-5 text-mint-deep" aria-hidden="true" />
-                <h3 className="font-display text-lg font-bold text-charcoal">
-                  Live Operational Availability
-                </h3>
-              </div>
-              <Badge
-                tone={
-                  activePartner.availability?.status === 'AVAILABLE'
-                    ? 'mint'
-                    : activePartner.availability?.status === 'BUSY'
-                      ? 'warning'
-                      : 'neutral'
-                }
-              >
-                Current: {activePartner.availability?.status || 'OFFLINE'}
-              </Badge>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-3">
-              {STATUS_OPTIONS.map((opt) => {
-                const isActive = activePartner.availability?.status === opt.value;
-                const disabled =
-                  updatingAvail ||
-                  (activePartner.verification_status !== 'APPROVED' &&
-                    opt.value !== 'OFFLINE');
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => handleAvailabilityChange(opt.value)}
-                    className={`rounded-2xl border p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-55 ${
-                      isActive
-                        ? 'border-mint-dark bg-mint-soft/60 shadow-sm'
-                        : 'border-border-soft bg-warm-white hover:border-mint-dark/60'
-                    }`}
-                  >
-                    <p className="font-display text-sm font-bold text-charcoal">
-                      {opt.label}
-                    </p>
-                    <p className="mt-1 text-xs text-charcoal-muted">{opt.desc}</p>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                maxLength={180}
-                value={statusNote}
-                onChange={(e) => setStatusNote(e.target.value)}
-                placeholder="Optional operational note (e.g., Front desk staffed until midnight)"
-                className="neu-input-pill flex-1 px-3.5 py-2 text-sm text-charcoal focus:outline-none"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                disabled={updatingAvail || activePartner.verification_status !== 'APPROVED'}
-                onClick={() =>
-                  handleAvailabilityChange(
-                    activePartner.availability?.status || 'AVAILABLE'
-                  )
-                }
-              >
-                Save Note
-              </Button>
-            </div>
-          </Card>
-
-          {/* Request History Table */}
-          <Card surface="matte" className="space-y-3 p-6">
-            <div className="flex items-center gap-2">
-              <Clock className="h-5 w-5 text-charcoal-muted" />
-              <h3 className="font-display text-base font-bold text-charcoal">
-                Past Assistance History ({historyRequests.length})
-              </h3>
-            </div>
-            {historyRequests.length === 0 ? (
-              <p className="text-xs text-charcoal-muted">No completed or declined requests yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {historyRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-warm-white px-4 py-2.5 text-xs"
-                  >
-                    <div>
-                      <span className="font-semibold text-charcoal">{req.requester_name}</span>{' '}
-                      · <span className="text-charcoal-muted">{req.partner_name}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge tone={req.status === 'CLOSED' ? 'violet' : 'neutral'}>
-                        {req.status}
-                      </Badge>
-                      <span className="text-charcoal-muted">
-                        {new Date(req.created_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </div>
+                  </Card>
                 ))}
               </div>
             )}
-          </Card>
+          </section>
+
+          {/* Past History */}
+          {pastRequests.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="font-display text-lg font-bold text-charcoal">
+                Past Requests ({pastRequests.length})
+              </h2>
+              <div className="grid gap-3 md:grid-cols-2">
+                {pastRequests.slice(0, 8).map((req) => (
+                  <Card key={req.id} surface="matte-subtle" className="p-4 text-xs">
+                    <div className="flex items-center justify-between">
+                      <Badge tone={req.status === 'CLOSED' ? 'mint' : 'neutral'}>
+                        {req.status_display}
+                      </Badge>
+                      <span className="text-charcoal-muted">
+                        {new Date(req.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="mt-2 font-bold text-charcoal">
+                      {req.requester_name} · {req.partner_name}
+                    </p>
+                  </Card>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </DashboardLayout>

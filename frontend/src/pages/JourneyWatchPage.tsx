@@ -1,90 +1,107 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { MapContainer, Marker, Polyline, Popup, TileLayer, useMapEvents } from 'react-leaflet';
 import {
-  Navigation,
-  Clock,
-  CheckCircle2,
   AlertTriangle,
-  EyeOff,
-  Users,
-  Plus,
-  Trash2,
-  Pencil,
-  ShieldCheck,
+  CheckCircle2,
+  Clock,
+  Copy,
+  ExternalLink,
   MapPin,
+  Navigation,
+  PhoneCall,
+  Plus,
+  Radio,
+  Search,
+  ShieldCheck,
+  StopCircle,
+  Trash2,
+  UserPlus,
 } from 'lucide-react';
 
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
-import { Modal } from '@/components/ui/Modal';
-import { EmergencyBanner } from '@/components/ui/EmergencyBanner';
+import { Badge, Button, Card, EmptyState, Input, Skeleton, Switch } from '@/components/ui';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { useGeolocation } from '@/hooks/useGeolocation';
+import {
+  createPinIcon,
+  createUserLocationIcon,
+  MAP_TILE_ATTRIBUTION,
+  MAP_TILE_URL,
+  MYSURU_DEFAULT_CENTER,
+} from '@/lib/leaflet';
 import {
   ApiError,
+  cancelJourney,
   checkInJourney,
   completeJourney,
   createTrustedContact,
   deleteTrustedContact,
   fetchJourneys,
   fetchTrustedContacts,
+  geoReverse,
+  geoSearch,
+  postJourneyLocation,
   startJourney,
   stopJourneySharing,
-  updateTrustedContact,
 } from '@/services/api';
-import type { JourneyItem, TrustedContactItem } from '@/types';
+import type { GeoSearchSuggestion, JourneyItem, TrustedContactItem } from '@/types';
+
+function DestinationPinPicker({ onPick }: { onPick: (lat: number, lng: number) => void }) {
+  useMapEvents({
+    click(e) {
+      onPick(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
 
 export function JourneyWatchPage() {
   const { user } = useAuth();
   const { pushToast } = useToast();
+  const geo = useGeolocation();
 
   const [journeys, setJourneys] = useState<JourneyItem[]>([]);
   const [contacts, setContacts] = useState<TrustedContactItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  // Start journey form
+  // New journey form
   const [originLabel, setOriginLabel] = useState('');
-  const [destinationLabel, setDestinationLabel] = useState('');
-  const [etaMinutes, setEtaMinutes] = useState('35');
-  const [intervalMinutes, setIntervalMinutes] = useState('15');
-  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
-  const [optInLocation, setOptInLocation] = useState(
-    Boolean(user?.profile?.location_sharing_default)
+  const [destQuery, setDestQuery] = useState('');
+  const [destSuggestions, setDestSuggestions] = useState<GeoSearchSuggestion[]>([]);
+  const [destCoords, setDestCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [etaMinutes, setEtaMinutes] = useState(30);
+  const [checkinInterval, setCheckinInterval] = useState(15);
+  const [enableLiveSharing, setEnableLiveSharing] = useState(
+    Boolean(user?.profile?.location_sharing_default ?? true),
   );
-  const [checkinNote, setCheckinNote] = useState('');
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
 
-  // Contact modal state
-  const [contactModalOpen, setContactModalOpen] = useState(false);
-  const [editingContact, setEditingContact] = useState<TrustedContactItem | null>(null);
+  // Arrival prompt (triggered when within 100 m of destination; never auto-completes)
+  const [arrivalPromptVisible, setArrivalPromptVisible] = useState(false);
+  const [distanceToDestM, setDistanceToDestM] = useState<number | null>(null);
+
+  // Trusted contact form
   const [cName, setCName] = useState('');
-  const [cRel, setCRel] = useState('');
+  const [cRelation, setCRelation] = useState('');
   const [cPhone, setCPhone] = useState('');
   const [cEmail, setCEmail] = useState('');
-  const [cPrimary, setCPrimary] = useState(false);
-  const [cNotifyStart, setCNotifyStart] = useState(true);
-  const [cNotifyMissed, setCNotifyMissed] = useState(true);
-  const [cNotifyArrival, setCNotifyArrival] = useState(true);
+  const [addingContact, setAddingContact] = useState(false);
 
   const loadAll = useCallback(async () => {
-    setLoading(true);
     try {
-      const [jRes, cRes] = await Promise.all([
-        fetchJourneys(),
-        fetchTrustedContacts(),
-      ]);
+      const [jRes, cRes] = await Promise.all([fetchJourneys(), fetchTrustedContacts()]);
       setJourneys(jRes.results);
       setContacts(cRes.results);
       setSelectedContactIds((prev) =>
-        prev.length > 0 ? prev : cRes.results.slice(0, 2).map((c) => c.id)
+        prev.length ? prev : cRes.results.slice(0, 2).map((c) => c.id),
       );
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Unable to load Journey Watch',
-        description: err instanceof ApiError ? err.message : 'Check backend connection.',
+        title: 'Could not load Journey Watch',
+        description: err instanceof ApiError ? err.message : 'Check your connection.',
       });
     } finally {
       setLoading(false);
@@ -92,677 +109,684 @@ export function JourneyWatchPage() {
   }, [pushToast]);
 
   useEffect(() => {
-    loadAll();
+    void loadAll();
   }, [loadAll]);
 
   const activeJourney = useMemo(
-    () => journeys.find((j) => j.status === 'ACTIVE' || j.status === 'OVERDUE') || null,
-    [journeys]
+    () =>
+      journeys.find(
+        (j) => j.status === 'ACTIVE' || j.status === 'MISSED' || j.status === 'OVERDUE',
+      ) || null,
+    [journeys],
   );
 
-  // Refresh active journey periodically to catch overdue check-in reminders
+  // Debounced Nominatim destination search
   useEffect(() => {
-    if (!activeJourney) return;
+    const trimmed = destQuery.trim();
+    if (trimmed.length < 3 || destCoords) {
+      setDestSuggestions([]);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await geoSearch(trimmed, 5);
+        setDestSuggestions(res.results);
+      } catch {
+        setDestSuggestions([]);
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [destQuery, destCoords]);
+
+  const activeJourneyId = activeJourney?.id ?? null;
+  const activeJourneySharing = Boolean(activeJourney?.location_sharing_enabled);
+
+  // Foreground watchPosition -> POST /api/journeys/{id}/location/ every 15 seconds while active & opt-in
+  useEffect(() => {
+    if (!activeJourneyId || !activeJourneySharing || !geo.coords) {
+      return;
+    }
+
+    const pushPing = async () => {
+      if (!geo.coords) return;
+      try {
+        const res = await postJourneyLocation(activeJourneyId, {
+          latitude: geo.coords.lat,
+          longitude: geo.coords.lng,
+          accuracy_m: geo.coords.accuracy,
+        });
+        setDistanceToDestM(res.distance_to_destination_m);
+        if (res.within_arrival_radius) {
+          setArrivalPromptVisible(true);
+        }
+        const refreshed = await fetchJourneys();
+        setJourneys(refreshed.results);
+      } catch {
+        // Ignore transient network drops
+      }
+    };
+
+    void pushPing();
     const timer = window.setInterval(() => {
-      fetchJourneys()
-        .then((res) => setJourneys(res.results))
-        .catch(() => {});
+      void pushPing();
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [activeJourney]);
+  }, [activeJourneyId, activeJourneySharing, geo.coords]);
+
+  const handlePickDestPin = async (lat: number, lng: number) => {
+    setDestCoords({ lat, lng });
+    setDestSuggestions([]);
+    try {
+      const rev = await geoReverse(lat, lng);
+      setDestQuery(rev.display_name);
+    } catch {
+      setDestQuery(`Pinned destination (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+    }
+  };
 
   const handleStartJourney = async (e: FormEvent) => {
     e.preventDefault();
-    if (!destinationLabel.trim()) return;
-    setBusy(true);
+    if (destQuery.trim().length < 2) {
+      pushToast({ tone: 'warning', title: 'Enter or pin a destination first' });
+      return;
+    }
+    setSubmitting(true);
     try {
-      const etaDate = new Date(Date.now() + Number(etaMinutes || 30) * 60000);
+      const expectedArrival = new Date(Date.now() + etaMinutes * 60_000).toISOString();
       const created = await startJourney({
-        origin_label: originLabel.trim(),
-        destination_label: destinationLabel.trim(),
-        expected_arrival_at: etaDate.toISOString(),
-        checkin_interval_minutes: Number(intervalMinutes || 15),
-        location_sharing_enabled: optInLocation,
+        origin_label: originLabel.trim() || 'Current location',
+        destination_label: destQuery.trim(),
+        destination_latitude: destCoords ? Number(destCoords.lat.toFixed(6)) : null,
+        destination_longitude: destCoords ? Number(destCoords.lng.toFixed(6)) : null,
+        expected_arrival_at: expectedArrival,
+        checkin_interval_minutes: checkinInterval,
+        location_sharing_enabled: enableLiveSharing,
         trusted_contact_ids: selectedContactIds,
       });
       setJourneys((prev) => [created, ...prev]);
-      setOriginLabel('');
-      setDestinationLabel('');
+      setArrivalPromptVisible(false);
+      if (enableLiveSharing) {
+        geo.startWatching();
+      }
       pushToast({
         tone: 'success',
         title: 'Journey Watch started',
-        description: `Private check-in timer active for ${created.destination_label}.`,
+        description: 'Share the expiring contact link with trusted contacts if desired.',
       });
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Could not start journey',
-        description: err instanceof ApiError ? err.message : 'Please check your input.',
+        description: err instanceof ApiError ? err.message : 'Please try again.',
       });
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
-  const handleCheckIn = async (statusChoice: 'SAFE' | 'DELAYED') => {
+  const handleCheckIn = async (status: 'SAFE' | 'DELAYED') => {
     if (!activeJourney) return;
-    setBusy(true);
     try {
       const updated = await checkInJourney(activeJourney.id, {
-        status: statusChoice,
-        note: checkinNote.trim(),
+        status,
+        note: status === 'SAFE' ? 'Checked in safe' : 'Running a few minutes late',
+        latitude: geo.coords ? Number(geo.coords.lat.toFixed(6)) : null,
+        longitude: geo.coords ? Number(geo.coords.lng.toFixed(6)) : null,
       });
       setJourneys((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
-      setCheckinNote('');
-      pushToast({
-        tone: 'success',
-        title: statusChoice === 'SAFE' ? 'Checked in safe' : 'Delay noted',
-        description: 'Your private check-in timer has been refreshed.',
-      });
+      pushToast({ tone: 'success', title: `Check-in recorded (${status})` });
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Check-in failed',
-        description: err instanceof ApiError ? err.message : 'Try again.',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
-    } finally {
-      setBusy(false);
     }
   };
 
   const handleComplete = async () => {
     if (!activeJourney) return;
-    setBusy(true);
     try {
       const updated = await completeJourney(activeJourney.id);
+      geo.stop();
+      setArrivalPromptVisible(false);
       setJourneys((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
       pushToast({
         tone: 'success',
-        title: 'Safe arrival confirmed',
-        description: 'Journey Watch has ended and location sharing is turned off.',
+        title: 'Arrived safely — Journey completed',
+        description: 'Share link expired and all location pings deleted.',
       });
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Could not complete journey',
-        description: err instanceof ApiError ? err.message : 'Try again.',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
-    } finally {
-      setBusy(false);
     }
   };
 
-  const handleStopSharing = async (endJourney: boolean) => {
+  const handleStopSharing = async (end = false, revoke = false) => {
     if (!activeJourney) return;
-    setBusy(true);
     try {
-      const updated = await stopJourneySharing(activeJourney.id, endJourney);
+      const updated = end
+        ? await cancelJourney(activeJourney.id)
+        : await stopJourneySharing(activeJourney.id, false, revoke);
+      geo.stop();
       setJourneys((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
       pushToast({
         tone: 'info',
-        title: endJourney ? 'Journey ended & sharing stopped' : 'Location sharing stopped',
-        description: 'Saved coordinates were cleared immediately.',
+        title: end ? 'Journey ended & pings deleted' : 'Live location sharing stopped',
       });
     } catch (err) {
       pushToast({
         tone: 'error',
         title: 'Action failed',
-        description: err instanceof ApiError ? err.message : 'Try again.',
+        description: err instanceof ApiError ? err.message : 'Please retry.',
       });
-    } finally {
-      setBusy(false);
     }
   };
 
-  const openContactModal = (contact: TrustedContactItem | null) => {
-    setEditingContact(contact);
-    setCName(contact?.name || '');
-    setCRel(contact?.relationship || '');
-    setCPhone(contact?.phone || '');
-    setCEmail(contact?.email || '');
-    setCPrimary(Boolean(contact?.is_primary));
-    setCNotifyStart(contact ? contact.notify_on_journey_start : true);
-    setCNotifyMissed(contact ? contact.notify_on_missed_checkin : true);
-    setCNotifyArrival(contact ? contact.notify_on_arrival : true);
-    setContactModalOpen(true);
-  };
-
-  const handleSaveContact = async (e: FormEvent) => {
+  const handleAddContact = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
-    const payload = {
-      name: cName.trim(),
-      relationship: cRel.trim(),
-      phone: cPhone.trim(),
-      email: cEmail.trim(),
-      is_primary: cPrimary,
-      notify_on_journey_start: cNotifyStart,
-      notify_on_missed_checkin: cNotifyMissed,
-      notify_on_arrival: cNotifyArrival,
-    };
+    if (!cName.trim() || !cPhone.trim()) return;
+    setAddingContact(true);
     try {
-      if (editingContact) {
-        const updated = await updateTrustedContact(editingContact.id, payload);
-        setContacts((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-        pushToast({ tone: 'success', title: 'Trusted contact updated' });
-      } else {
-        const created = await createTrustedContact(payload);
-        setContacts((prev) => [created, ...prev]);
-        setSelectedContactIds((prev) => [...prev, created.id]);
-        pushToast({ tone: 'success', title: 'Trusted contact added' });
-      }
-      setContactModalOpen(false);
+      const created = await createTrustedContact({
+        name: cName.trim(),
+        relationship: cRelation.trim(),
+        phone: cPhone.trim(),
+        email: cEmail.trim(),
+        notify_on_journey_start: true,
+        notify_on_missed_checkin: true,
+        notify_on_arrival: true,
+        is_primary: contacts.length === 0,
+      });
+      setContacts((prev) => [...prev, created]);
+      setSelectedContactIds((prev) => [...prev, created.id]);
+      setCName('');
+      setCRelation('');
+      setCPhone('');
+      setCEmail('');
+      pushToast({ tone: 'success', title: 'Trusted contact added' });
     } catch (err) {
       pushToast({
         tone: 'error',
-        title: 'Could not save contact',
-        description: err instanceof ApiError ? err.message : 'Check fields.',
+        title: 'Could not add contact',
+        description: err instanceof ApiError ? err.message : 'Please check input.',
       });
     } finally {
-      setBusy(false);
+      setAddingContact(false);
     }
   };
 
-  const handleDeleteContact = async (id: string) => {
-    try {
-      await deleteTrustedContact(id);
-      setContacts((prev) => prev.filter((c) => c.id !== id));
-      setSelectedContactIds((prev) => prev.filter((cid) => cid !== id));
-      pushToast({ tone: 'info', title: 'Contact removed' });
-    } catch {
-      pushToast({ tone: 'error', title: 'Could not delete contact' });
-    }
-  };
+  const shareUrl = activeJourney?.share_token
+    ? `${window.location.origin}/journey-status/${activeJourney.share_token}`
+    : '';
 
-  const toggleContactSelection = (id: string) => {
-    setSelectedContactIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
+  const liveTrail = useMemo<[number, number][]>(() => {
+    if (!activeJourney?.recent_pings?.length) return [];
+    return activeJourney.recent_pings.map((p) => [Number(p.latitude), Number(p.longitude)]);
+  }, [activeJourney]);
 
   return (
     <DashboardLayout
-      title="Journey Watch & Trusted Contacts"
-      subtitle="Private, opt-in travel check-ins with the people you trust. Your journey details are never shown on public maps."
+      title="Private Journey Watch & Trusted Contacts"
+      subtitle="Opt-in live travel check-ins with expiring read-only links for trusted contacts — never shown on public maps."
     >
-      <div className="grid gap-6 lg:grid-cols-12">
-        {/* Left: Active Journey OR Start New Journey */}
-        <div className="space-y-6 lg:col-span-7">
-          {loading ? (
-            <div className="surface-matte h-56 animate-pulse p-6" />
-          ) : activeJourney ? (
-            <Card surface="glass-3d" className="space-y-5 p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+      {/* Persistent Sharing Location Banner whenever live tracking is active */}
+      {activeJourney && activeJourney.location_sharing_enabled && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-mint-dark bg-mint-soft px-4 py-3 text-xs text-mint-deep shadow-elev-1"
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            <Radio className="h-4 w-4 animate-pulse" />
+            <span>
+              Sharing location live for journey to <strong>{activeJourney.destination_label}</strong>.
+              Keep this page open while travelling (web browsers cannot track in the background when
+              the tab is closed or phone is locked).
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => void handleStopSharing(false, false)}
+          >
+            <StopCircle className="h-3.5 w-3.5" />
+            Stop Sharing
+          </Button>
+        </div>
+      )}
+
+      {/* Arrival Proximity Prompt (<= 100 m, requires explicit user confirmation) */}
+      {activeJourney && arrivalPromptVisible && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-mint-dark bg-mint-soft/70 p-4">
+          <div className="flex items-center gap-2.5 text-sm font-bold text-mint-deep">
+            <CheckCircle2 className="h-5 w-5" />
+            <span>
+              You are within 100 m of {activeJourney.destination_label}. Have you arrived safely?
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="primary" onClick={() => void handleComplete()}>
+              Yes, I Have Arrived
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setArrivalPromptVisible(false)}
+            >
+              Not yet
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {loading ? (
+        <Skeleton className="h-64 w-full" />
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-12">
+          {/* Left: Active Journey OR Start New Journey */}
+          <div className="space-y-5 lg:col-span-7">
+            {activeJourney ? (
+              <Card className="space-y-5 p-6">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <Badge
                     tone={
-                      activeJourney.status === 'OVERDUE' || activeJourney.is_checkin_overdue
-                        ? 'warning'
+                      activeJourney.status === 'MISSED' || activeJourney.status === 'OVERDUE'
+                        ? 'error'
                         : 'mint'
                     }
                   >
-                    {activeJourney.status === 'OVERDUE' || activeJourney.is_checkin_overdue
-                      ? 'Missed Check-In Reminder'
-                      : 'Journey Watch Active'}
+                    {activeJourney.status_display}
                   </Badge>
-                  <Badge tone={activeJourney.location_sharing_enabled ? 'blue' : 'neutral'}>
-                    {activeJourney.location_sharing_enabled
-                      ? 'Opt-In Sharing ON'
-                      : 'Location Sharing OFF'}
-                  </Badge>
-                </div>
-                <span className="text-xs font-medium text-charcoal-muted">
-                  ETA: {new Date(activeJourney.expected_arrival_at).toLocaleTimeString()}
-                </span>
-              </div>
-
-              {(activeJourney.status === 'OVERDUE' || activeJourney.is_checkin_overdue) && (
-                <div className="flex items-start gap-2.5 rounded-2xl border border-[var(--color-warning)] bg-[var(--color-warning-soft)] p-4 text-xs text-[var(--color-warning-deep)]">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>
-                    <strong>Check-in reminder:</strong> Your scheduled check-in time has
-                    passed. Tap <strong>Check In Safe</strong> or{' '}
-                    <strong>Confirm Arrival</strong> below.
+                  <span className="text-xs text-charcoal-muted">
+                    ETA: {new Date(activeJourney.expected_arrival_at).toLocaleTimeString()}
                   </span>
                 </div>
-              )}
 
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-charcoal-muted">
-                  Destination
-                </p>
-                <h2 className="mt-1 font-display text-2xl font-extrabold text-charcoal">
-                  {activeJourney.destination_label}
-                </h2>
-                {activeJourney.origin_label && (
-                  <p className="text-xs text-charcoal-muted">
-                    From: {activeJourney.origin_label}
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-2 rounded-2xl bg-white/85 p-4">
-                <input
-                  type="text"
-                  value={checkinNote}
-                  onChange={(e) => setCheckinNote(e.target.value)}
-                  placeholder="Optional check-in note (e.g., Reached metro station)"
-                  className="neu-input-pill w-full px-3.5 py-2 text-xs text-charcoal focus:outline-none"
-                />
-                <div className="flex flex-wrap gap-2.5 pt-1">
-                  <Button
-                    type="button"
-                    variant="primary"
-                    size="md"
-                    disabled={busy}
-                    onClick={() => handleCheckIn('SAFE')}
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    Check In Safe
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="md"
-                    disabled={busy}
-                    onClick={() => handleCheckIn('DELAYED')}
-                  >
-                    <Clock className="h-4 w-4" />
-                    Running Late
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="primary"
-                    size="md"
-                    disabled={busy}
-                    onClick={handleComplete}
-                  >
-                    <ShieldCheck className="h-4 w-4" />
-                    I Arrived Safely
-                  </Button>
-                </div>
-              </div>
-
-              {/* Visible Instant Privacy Control */}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border-soft/70 pt-4">
-                {activeJourney.location_sharing_enabled && (
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => handleStopSharing(false)}
-                  >
-                    <EyeOff className="h-3.5 w-3.5" />
-                    Stop Location Sharing
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => handleStopSharing(true)}
-                >
-                  End Journey Early
-                </Button>
-              </div>
-
-              {/* Check-in Timeline */}
-              {activeJourney.checkins.length > 0 && (
-                <div className="space-y-2 border-t border-border-soft/70 pt-4">
-                  <p className="text-xs font-bold uppercase tracking-wider text-charcoal-muted">
-                    Check-In Timeline
-                  </p>
-                  <ul className="space-y-1.5 text-xs">
-                    {activeJourney.checkins.slice(0, 5).map((ci) => (
-                      <li
-                        key={ci.id}
-                        className="flex items-center justify-between rounded-xl bg-white/75 px-3 py-2"
-                      >
-                        <span className="font-medium text-charcoal">
-                          {ci.status_display}
-                          {ci.note ? ` — ${ci.note}` : ''}
-                        </span>
-                        <span className="text-charcoal-muted">
-                          {new Date(ci.created_at).toLocaleTimeString()}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </Card>
-          ) : (
-            <Card surface="matte" className="p-6">
-              <div className="flex items-center gap-2">
-                <Navigation className="h-5 w-5 text-mint-deep" />
-                <h2 className="font-display text-lg font-bold text-charcoal">
-                  Start Private Journey Watch
-                </h2>
-              </div>
-              <p className="mt-1 text-xs text-charcoal-muted">
-                Set your destination, expected arrival time, and choose which trusted
-                contacts stay informed.
-              </p>
-
-              <form onSubmit={handleStartJourney} className="mt-5 space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Input
-                    label="Starting Point (Optional)"
-                    value={originLabel}
-                    onChange={(e) => setOriginLabel(e.target.value)}
-                    placeholder="e.g. Indiranagar Metro"
-                    leftIcon={<MapPin className="h-4 w-4" />}
-                  />
-                  <Input
-                    label="Destination"
-                    value={destinationLabel}
-                    onChange={(e) => setDestinationLabel(e.target.value)}
-                    placeholder="e.g. Koramangala Home"
-                    leftIcon={<Navigation className="h-4 w-4" />}
-                    required
-                  />
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Input
-                    label="Expected Arrival (minutes from now)"
-                    type="number"
-                    min={5}
-                    max={360}
-                    value={etaMinutes}
-                    onChange={(e) => setEtaMinutes(e.target.value)}
-                    required
-                  />
-                  <Input
-                    label="Check-In Reminder Every (mins)"
-                    type="number"
-                    min={5}
-                    max={180}
-                    value={intervalMinutes}
-                    onChange={(e) => setIntervalMinutes(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <span className="block text-xs font-semibold text-charcoal">
-                    Select Trusted Contacts for This Journey
-                  </span>
-                  {contacts.length === 0 ? (
-                    <p className="text-xs text-charcoal-muted">
-                      Add a trusted contact on the right panel to include them here.
+                <div>
+                  <h2 className="font-display text-xl font-extrabold text-charcoal">
+                    {activeJourney.origin_label || 'Origin'} → {activeJourney.destination_label}
+                  </h2>
+                  {distanceToDestM !== null && (
+                    <p className="mt-1 text-xs text-charcoal-muted tabular-nums">
+                      Approx. {Math.round(distanceToDestM)} m to destination
                     </p>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {contacts.map((c) => {
-                        const selected = selectedContactIds.includes(c.id);
-                        return (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => toggleContactSelection(c.id)}
-                            className={`neu-chip px-3.5 py-1.5 text-xs font-semibold ${
-                              selected ? 'neu-chip-active' : ''
-                            }`}
-                          >
-                            {c.name}
-                          </button>
-                        );
-                      })}
-                    </div>
                   )}
                 </div>
 
-                <label className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-border-soft bg-warm-white p-3.5 text-xs text-charcoal-muted">
-                  <input
-                    type="checkbox"
-                    checked={optInLocation}
-                    onChange={(e) => setOptInLocation(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-[#68bfa3]"
-                  />
-                  <span>
-                    <strong className="block text-charcoal">
-                      Opt-in: Allow check-in location capture for this private journey
-                    </strong>
-                    You can tap &ldquo;Stop Location Sharing&rdquo; anytime to turn this
-                    off immediately. Never shown publicly.
-                  </span>
-                </label>
-
-                <Button type="submit" variant="primary" size="lg" disabled={busy}>
-                  <Navigation className="h-4 w-4" />
-                  {busy ? 'Starting...' : 'Start Journey Watch'}
-                </Button>
-              </form>
-            </Card>
-          )}
-
-          {/* Past Journey History */}
-          <Card surface="matte" className="space-y-3 p-6">
-            <h3 className="font-display text-base font-bold text-charcoal">
-              Recent Journeys ({journeys.length})
-            </h3>
-            {journeys.length === 0 ? (
-              <p className="text-xs text-charcoal-muted">No journeys recorded yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {journeys.slice(0, 6).map((j) => (
-                  <div
-                    key={j.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-warm-white px-4 py-3 text-xs"
-                  >
-                    <div>
-                      <p className="font-semibold text-charcoal">{j.destination_label}</p>
-                      <p className="text-charcoal-muted">
-                        {new Date(j.created_at).toLocaleString()} ·{' '}
-                        {j.trusted_contacts.length} contact(s)
-                      </p>
-                    </div>
-                    <Badge
-                      tone={
-                        j.status === 'COMPLETED'
-                          ? 'mint'
-                          : j.status === 'ACTIVE'
-                            ? 'blue'
-                            : j.status === 'OVERDUE'
-                              ? 'warning'
-                              : 'neutral'
-                      }
-                    >
-                      {j.status_display}
-                    </Badge>
+                {(activeJourney.status === 'MISSED' || activeJourney.is_checkin_overdue) && (
+                  <div className="flex items-start gap-2 rounded-control border border-[var(--color-error)] bg-[var(--color-error-soft)] p-3 text-xs text-[var(--color-error-deep)]">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      Your expected check-in time passed. Tap <strong>Check In Safe</strong> now or
+                      call <a href="tel:112" className="font-bold underline">112</a> if you need
+                      immediate emergency assistance.
+                    </span>
                   </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        </div>
+                )}
 
-        {/* Right: Trusted Contacts Manager */}
-        <div className="lg:col-span-5">
-          <Card surface="matte" className="space-y-4 p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Users className="h-5 w-5 text-[#9b2c63]" />
+                {/* Live Own Route Map */}
+                <div className="h-64 w-full overflow-hidden rounded-control border border-border-soft">
+                  <MapContainer
+                    center={[
+                      geo.coords?.lat ??
+                        Number(
+                          activeJourney.last_known_latitude ??
+                            activeJourney.destination_latitude ??
+                            MYSURU_DEFAULT_CENTER.lat,
+                        ),
+                      geo.coords?.lng ??
+                        Number(
+                          activeJourney.last_known_longitude ??
+                            activeJourney.destination_longitude ??
+                            MYSURU_DEFAULT_CENTER.lng,
+                        ),
+                    ]}
+                    zoom={14}
+                    className="h-full w-full"
+                  >
+                    <TileLayer url={MAP_TILE_URL} attribution={MAP_TILE_ATTRIBUTION} maxZoom={19} />
+                    {(geo.coords ||
+                      (activeJourney.last_known_latitude &&
+                        activeJourney.last_known_longitude)) && (
+                      <Marker
+                        position={[
+                          geo.coords?.lat ?? Number(activeJourney.last_known_latitude),
+                          geo.coords?.lng ?? Number(activeJourney.last_known_longitude),
+                        ]}
+                        icon={createUserLocationIcon()}
+                      >
+                        <Popup>Your current position</Popup>
+                      </Marker>
+                    )}
+                    {activeJourney.destination_latitude && activeJourney.destination_longitude && (
+                      <Marker
+                        position={[
+                          Number(activeJourney.destination_latitude),
+                          Number(activeJourney.destination_longitude),
+                        ]}
+                        icon={createPinIcon()}
+                      >
+                        <Popup>Destination: {activeJourney.destination_label}</Popup>
+                      </Marker>
+                    )}
+                    {liveTrail.length >= 2 && (
+                      <Polyline positions={liveTrail} pathOptions={{ color: '#2563EB', weight: 4 }} />
+                    )}
+                  </MapContainer>
+                </div>
+
+                {/* Private Expiring Contact Link */}
+                {shareUrl && activeJourney.is_share_link_valid && (
+                  <div className="space-y-2 rounded-control border border-border-soft bg-warm-white p-3.5 text-xs">
+                    <p className="font-bold text-charcoal">
+                      Private Expiring Link for Trusted Contacts
+                    </p>
+                    <p className="break-all font-mono text-[11px] text-charcoal-muted">
+                      {shareUrl}
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(shareUrl);
+                          pushToast({ tone: 'success', title: 'Private status link copied' });
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy Link
+                      </Button>
+                      <a href={shareUrl} target="_blank" rel="noreferrer">
+                        <Button size="sm" variant="ghost" type="button">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Preview Contact View
+                        </Button>
+                      </a>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => void handleStopSharing(false, true)}
+                      >
+                        Revoke Link
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Check-in & Completion Actions */}
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" onClick={() => void handleCheckIn('SAFE')}>
+                    <ShieldCheck className="h-4 w-4" />
+                    Check In Safe
+                  </Button>
+                  <Button variant="secondary" onClick={() => void handleCheckIn('DELAYED')}>
+                    <Clock className="h-4 w-4" />
+                    Running Late
+                  </Button>
+                  {activeJourney.location_sharing_enabled && !geo.isWatching && (
+                    <Button variant="secondary" onClick={() => geo.startWatching()}>
+                      <Navigation className="h-4 w-4" />
+                      Resume Live GPS
+                    </Button>
+                  )}
+                  <Button variant="primary" onClick={() => void handleComplete()}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Arrived Safely
+                  </Button>
+                  <Button variant="danger" onClick={() => void handleStopSharing(true, true)}>
+                    Cancel Journey
+                  </Button>
+                </div>
+              </Card>
+            ) : (
+              <Card className="space-y-4 p-6">
+                <h2 className="font-display text-lg font-bold text-charcoal">
+                  Start Opt-In Journey Watch
+                </h2>
+                <p className="text-xs text-charcoal-muted">
+                  Keep this page open while travelling. Web browsers cannot run background GPS when
+                  the tab is closed or the phone screen is locked.
+                </p>
+
+                <form onSubmit={handleStartJourney} className="space-y-4">
+                  <Input
+                    label="Starting Point (optional)"
+                    value={originLabel}
+                    onChange={(e) => setOriginLabel(e.target.value)}
+                    placeholder="e.g. SJCE Campus Gate, Mysuru"
+                  />
+
+                  <div className="relative space-y-1.5">
+                    <label
+                      htmlFor="journey-dest"
+                      className="block text-xs font-semibold text-charcoal"
+                    >
+                      Destination (search or tap on map below)
+                    </label>
+                    <div className="neu-input-pill flex items-center gap-2 px-3.5 py-2.5">
+                      <Search className="h-4 w-4 text-charcoal-muted" />
+                      <input
+                        id="journey-dest"
+                        type="text"
+                        required
+                        value={destQuery}
+                        onChange={(e) => {
+                          setDestQuery(e.target.value);
+                          setDestCoords(null);
+                        }}
+                        placeholder="Search destination in India or tap the map..."
+                        className="w-full bg-transparent text-sm text-charcoal focus:outline-none"
+                      />
+                    </div>
+                    {destSuggestions.length > 0 && (
+                      <ul className="absolute left-0 right-0 z-30 mt-1 max-h-48 overflow-y-auto rounded-card border border-border-soft bg-white p-1 shadow-elev-3">
+                        {destSuggestions.map((s) => (
+                          <li key={`${s.lat}-${s.lng}-${s.display_name}`}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDestQuery(s.display_name);
+                                setDestCoords({ lat: s.lat, lng: s.lng });
+                                setDestSuggestions([]);
+                              }}
+                              className="flex w-full items-start gap-2 rounded-control px-3 py-2 text-left text-xs hover:bg-mint-soft/70"
+                            >
+                              <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-mint-deep" />
+                              <span className="line-clamp-2">{s.display_name}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Tap-to-pin destination mini-map */}
+                  <div className="h-52 w-full overflow-hidden rounded-control border border-border-soft">
+                    <MapContainer
+                      center={[
+                        destCoords?.lat ?? MYSURU_DEFAULT_CENTER.lat,
+                        destCoords?.lng ?? MYSURU_DEFAULT_CENTER.lng,
+                      ]}
+                      zoom={13}
+                      className="h-full w-full"
+                    >
+                      <TileLayer url={MAP_TILE_URL} attribution={MAP_TILE_ATTRIBUTION} maxZoom={19} />
+                      <DestinationPinPicker onPick={(lat, lng) => void handlePickDestPin(lat, lng)} />
+                      {destCoords && (
+                        <Marker position={[destCoords.lat, destCoords.lng]} icon={createPinIcon()}>
+                          <Popup>Destination pin</Popup>
+                        </Marker>
+                      )}
+                    </MapContainer>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Input
+                      label="Expected Arrival (minutes from now)"
+                      type="number"
+                      min={5}
+                      max={360}
+                      value={etaMinutes}
+                      onChange={(e) => setEtaMinutes(Number(e.target.value) || 30)}
+                    />
+                    <Input
+                      label="Check-in Interval (minutes)"
+                      type="number"
+                      min={5}
+                      max={180}
+                      value={checkinInterval}
+                      onChange={(e) => setCheckinInterval(Number(e.target.value) || 15)}
+                    />
+                  </div>
+
+                  <div className="rounded-control border border-mint-dark/40 bg-mint-soft/45 p-3.5">
+                    <Switch
+                      checked={enableLiveSharing}
+                      onChange={setEnableLiveSharing}
+                      label="Share live GPS while this page stays open"
+                      description="Updates every 15 s and generates an expiring read-only link for selected trusted contacts."
+                    />
+                  </div>
+
+                  {contacts.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-charcoal">
+                        Trusted Contacts for this Journey
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {contacts.map((c) => {
+                          const picked = selectedContactIds.includes(c.id);
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedContactIds((prev) =>
+                                  picked ? prev.filter((id) => id !== c.id) : [...prev, c.id],
+                                )
+                              }
+                              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                picked ? 'neu-chip-active' : 'neu-chip'
+                              }`}
+                            >
+                              {c.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <Button type="submit" variant="primary" disabled={submitting}>
+                    <Navigation className="h-4 w-4" />
+                    {submitting ? 'Starting...' : 'Start Journey Watch'}
+                  </Button>
+                </form>
+              </Card>
+            )}
+          </div>
+
+          {/* Right: Trusted Contacts CRUD */}
+          <div className="space-y-5 lg:col-span-5">
+            <Card className="space-y-4 p-6">
+              <div className="flex items-center justify-between">
                 <h2 className="font-display text-lg font-bold text-charcoal">
                   Trusted Contacts ({contacts.length})
                 </h2>
+                <UserPlus className="h-4 w-4 text-mint-deep" />
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                onClick={() => openContactModal(null)}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add
-              </Button>
-            </div>
 
-            {contacts.length === 0 ? (
-              <p className="rounded-2xl bg-warm-white p-4 text-xs text-charcoal-muted">
-                No trusted contacts saved yet. Add family members or friends you want
-                available for Journey Watch.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {contacts.map((contact) => (
-                  <div
-                    key={contact.id}
-                    className="space-y-2.5 rounded-2xl border border-border-soft bg-warm-white p-4"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-display text-sm font-bold text-charcoal">
-                            {contact.name}
-                          </p>
-                          {contact.is_primary && <Badge tone="mint">Primary</Badge>}
-                        </div>
+              {contacts.length === 0 ? (
+                <EmptyState
+                  title="No trusted contacts yet"
+                  description="Add a family member or friend to receive missed check-in reminders."
+                />
+              ) : (
+                <ul className="space-y-2.5">
+                  {contacts.map((c) => (
+                    <li
+                      key={c.id}
+                      className="flex items-center justify-between gap-2 rounded-control border border-border-soft bg-warm-white p-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-charcoal">{c.name}</p>
                         <p className="text-xs text-charcoal-muted">
-                          {contact.relationship || 'Trusted Contact'} · {contact.phone}
+                          {c.relationship ? `${c.relationship} · ` : ''}
+                          {c.phone}
                         </p>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1.5">
+                        <a
+                          href={`tel:${c.phone}`}
+                          aria-label={`Call ${c.name}`}
+                          className="rounded-full p-2 text-mint-deep hover:bg-mint-soft"
+                        >
+                          <PhoneCall className="h-4 w-4" />
+                        </a>
                         <button
                           type="button"
-                          onClick={() => openContactModal(contact)}
-                          aria-label={`Edit ${contact.name}`}
-                          className="rounded-full p-1.5 text-charcoal-muted hover:bg-pure-white hover:text-charcoal"
+                          aria-label={`Remove ${c.name}`}
+                          onClick={async () => {
+                            await deleteTrustedContact(c.id);
+                            setContacts((prev) => prev.filter((item) => item.id !== c.id));
+                            pushToast({ tone: 'info', title: 'Contact removed' });
+                          }}
+                          className="rounded-full p-2 text-charcoal-muted hover:bg-[var(--color-error-soft)] hover:text-[var(--color-error-deep)]"
                         >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteContact(contact.id)}
-                          aria-label={`Delete ${contact.name}`}
-                          className="rounded-full p-1.5 text-charcoal-muted hover:bg-[var(--color-error-soft)] hover:text-[var(--color-error-deep)]"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                    </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
-                    <div className="flex flex-wrap gap-1.5 text-[10px] font-semibold">
-                      {contact.notify_on_journey_start && (
-                        <span className="rounded-full bg-pure-white px-2.5 py-0.5 text-charcoal-muted">
-                          Notify on Start
-                        </span>
-                      )}
-                      {contact.notify_on_missed_checkin && (
-                        <span className="rounded-full bg-pure-white px-2.5 py-0.5 text-charcoal-muted">
-                          Missed Check-In Alert
-                        </span>
-                      )}
-                      {contact.notify_on_arrival && (
-                        <span className="rounded-full bg-pure-white px-2.5 py-0.5 text-charcoal-muted">
-                          Arrival Notice
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
+              <form
+                onSubmit={handleAddContact}
+                className="space-y-3 border-t border-border-soft pt-4"
+              >
+                <p className="text-xs font-bold text-charcoal">Add Trusted Contact</p>
+                <Input
+                  label="Name"
+                  required
+                  value={cName}
+                  onChange={(e) => setCName(e.target.value)}
+                  placeholder="e.g. Anitha Rao"
+                />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Input
+                    label="Phone"
+                    required
+                    value={cPhone}
+                    onChange={(e) => setCPhone(e.target.value)}
+                    placeholder="+91-98450-12345"
+                  />
+                  <Input
+                    label="Relationship"
+                    value={cRelation}
+                    onChange={(e) => setCRelation(e.target.value)}
+                    placeholder="Sister / Friend"
+                  />
+                </div>
+                <Input
+                  label="Email (optional)"
+                  type="email"
+                  value={cEmail}
+                  onChange={(e) => setCEmail(e.target.value)}
+                  placeholder="contact@example.com"
+                />
+                <Button size="sm" variant="secondary" type="submit" disabled={addingContact}>
+                  <Plus className="h-3.5 w-3.5" />
+                  {addingContact ? 'Adding...' : 'Add Trusted Contact'}
+                </Button>
+              </form>
+            </Card>
+          </div>
         </div>
-      </div>
-
-      <EmergencyBanner />
-
-      <Modal
-        open={contactModalOpen}
-        onClose={() => setContactModalOpen(false)}
-        title={editingContact ? 'Edit Trusted Contact' : 'Add Trusted Contact'}
-      >
-        <form onSubmit={handleSaveContact} className="space-y-4">
-          <Input
-            label="Name"
-            value={cName}
-            onChange={(e) => setCName(e.target.value)}
-            placeholder="e.g. Meera Rao"
-            required
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input
-              label="Relationship"
-              value={cRel}
-              onChange={(e) => setCRel(e.target.value)}
-              placeholder="Sister, Friend, Parent"
-            />
-            <Input
-              label="Phone Number"
-              value={cPhone}
-              onChange={(e) => setCPhone(e.target.value)}
-              placeholder="+91-90000-00000"
-              required
-            />
-          </div>
-          <Input
-            label="Email (Optional)"
-            type="email"
-            value={cEmail}
-            onChange={(e) => setCEmail(e.target.value)}
-            placeholder="contact@example.com"
-          />
-
-          <div className="space-y-2 rounded-2xl bg-warm-white p-3.5 text-xs">
-            <p className="font-semibold text-charcoal">Notification Preferences</p>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cPrimary}
-                onChange={(e) => setCPrimary(e.target.checked)}
-                className="accent-[#68bfa3]"
-              />
-              Mark as Primary Trusted Contact
-            </label>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cNotifyStart}
-                onChange={(e) => setCNotifyStart(e.target.checked)}
-                className="accent-[#68bfa3]"
-              />
-              Notify when Journey Watch starts
-            </label>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cNotifyMissed}
-                onChange={(e) => setCNotifyMissed(e.target.checked)}
-                className="accent-[#68bfa3]"
-              />
-              Notify on missed check-in reminder
-            </label>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cNotifyArrival}
-                onChange={(e) => setCNotifyArrival(e.target.checked)}
-                className="accent-[#68bfa3]"
-              />
-              Notify on safe arrival
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => setContactModalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" variant="primary" disabled={busy}>
-              {busy ? 'Saving...' : 'Save Contact'}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      )}
     </DashboardLayout>
   );
 }
