@@ -1,8 +1,8 @@
-"""Administrator governance, moderation, and analytics API routes."""
+"""Administrator governance, moderation, audit logs, and analytics API routes."""
 
 from django.urls import path
 
-from accounts.admin_views import AdminAnalyticsView
+from accounts.admin_views import AdminAnalyticsView, AdminAuditLogListView
 from companions.views import AdminCompanionListView, AdminCompanionReviewView
 from partners.views import AdminPartnerListView, AdminPartnerReviewView
 from reports.views import AdminSafetyReportListView, AdminSafetyReportReviewView
@@ -15,4 +15,5 @@ urlpatterns = [
     path("companions/", AdminCompanionListView.as_view(), name="admin-companion-list"),
     path("companions/<uuid:pk>/review/", AdminCompanionReviewView.as_view(), name="admin-companion-review"),
     path("analytics/", AdminAnalyticsView.as_view(), name="admin-analytics"),
+    path("audit-logs/", AdminAuditLogListView.as_view(), name="admin-audit-logs"),
 ]

@@ -52,7 +52,7 @@ class Partner(models.Model):
     description = models.TextField(blank=True)
     address = models.CharField(max_length=255)
     area = models.CharField(max_length=120, blank=True)
-    city = models.CharField(max_length=100, default="Bengaluru", db_index=True)
+    city = models.CharField(max_length=100, default="Mysuru", db_index=True)
     latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,

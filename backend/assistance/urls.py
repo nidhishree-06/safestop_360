@@ -11,6 +11,8 @@ from assistance.views import (
     HelpRequestDetailView,
     HelpRequestFeedbackView,
     HelpRequestListCreateView,
+    HelpRequestLocationPingView,
+    HelpRequestStopSharingView,
 )
 
 urlpatterns = [
@@ -21,5 +23,11 @@ urlpatterns = [
     path("<uuid:pk>/arrived/", HelpRequestArrivedView.as_view(), name="help-request-arrived"),
     path("<uuid:pk>/close/", HelpRequestCloseView.as_view(), name="help-request-close"),
     path("<uuid:pk>/cancel/", HelpRequestCancelView.as_view(), name="help-request-cancel"),
+    path("<uuid:pk>/location/", HelpRequestLocationPingView.as_view(), name="help-request-location"),
+    path(
+        "<uuid:pk>/stop-sharing/",
+        HelpRequestStopSharingView.as_view(),
+        name="help-request-stop-sharing",
+    ),
     path("<uuid:pk>/feedback/", HelpRequestFeedbackView.as_view(), name="help-request-feedback"),
 ]

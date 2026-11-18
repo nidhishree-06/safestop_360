@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.views import log_audit
-from reports.intelligence import analyze_safety_reports
+from analysis.analyzer import analyze_reports as analyze_safety_reports
 from reports.models import SafetyReport
 from reports.serializers import (
     AdminReportReviewSerializer,

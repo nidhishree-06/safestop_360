@@ -1,4 +1,4 @@
-"""Django settings for SafeStop 360."""
+"""Django settings for SafeStop 360 (v2, GPS-First)."""
 
 from datetime import timedelta
 import os
@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "journeys",
     "reports",
     "companions",
+    "geo",
 ]
 
 MIDDLEWARE = [
@@ -83,7 +84,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "safestop.wsgi.application"
 ASGI_APPLICATION = "safestop.asgi.application"
 
-# Database: SQLite for local dev, PostgreSQL via DATABASE_URL in production
+# Database: SQLite locally, PostgreSQL via DATABASE_URL in production
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 if DATABASE_URL:
     DATABASES = {
@@ -100,6 +101,13 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "safestop-geo-cache",
+    }
+}
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -134,13 +142,27 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # CORS & CSRF
 CORS_ALLOWED_ORIGINS = _csv_env(
     "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173",
 )
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = _csv_env(
     "CSRF_TRUSTED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173",
 )
+
+# Geo proxy upstream configuration
+NOMINATIM_BASE_URL = os.getenv(
+    "NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"
+).rstrip("/")
+NOMINATIM_USER_AGENT = os.getenv(
+    "NOMINATIM_USER_AGENT",
+    "SafeStop360/2.0 (women-safety-ideathon; contact@safestop360.demo)",
+)
+OVERPASS_URLS = _csv_env(
+    "OVERPASS_URLS",
+    "https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter",
+)
+OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
 
 # Django REST Framework
 REST_FRAMEWORK = {
@@ -151,6 +173,7 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "safestop.exceptions.safestop_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
@@ -159,9 +182,11 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "120/minute",
         "user": "300/minute",
-        "auth_login": "15/minute",
-        "auth_register": "10/minute",
-        "help_request": "20/minute",
+        "auth_login": "20/minute",
+        "auth_register": "15/minute",
+        "help_request": "25/minute",
+        "geo_proxy": "60/minute",
+        "location_ping": "120/minute",
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
@@ -186,7 +211,7 @@ SPECTACULAR_SETTINGS = {
         "REST API for SafeStop 360 — Find Help. Reach Safety. Stay Connected. "
         "Note: Independent assistance platform; does not replace official emergency services (112 / 181)."
     ),
-    "VERSION": "1.0.0",
+    "VERSION": "2.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
 

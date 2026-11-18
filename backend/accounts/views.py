@@ -11,7 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import AuditLog, Notification, UserProfile
 from assistance.models import HelpRequest
-from journeys.models import Journey, TrustedContact
+from journeys.models import Journey, JourneyCheckIn, LocationPing, TrustedContact
 from partners.models import Partner, PartnerAvailability
 from reports.models import SafetyReport
 from accounts.serializers import (
@@ -192,6 +192,44 @@ class ChangePasswordView(APIView):
         )
 
 
+class DeleteMyLocationDataView(APIView):
+    """Privacy action: permanently delete all stored location pings and coordinates for the user."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request: Request) -> Response:
+        deleted_pings, _ = LocationPing.objects.filter(user=request.user).delete()
+        Journey.objects.filter(owner=request.user).update(
+            location_sharing_enabled=False,
+            last_known_latitude=None,
+            last_known_longitude=None,
+        )
+        JourneyCheckIn.objects.filter(journey__owner=request.user).update(
+            latitude=None,
+            longitude=None,
+        )
+        HelpRequest.objects.filter(requester=request.user).update(
+            share_live_location=False,
+            requester_latitude=None,
+            requester_longitude=None,
+        )
+        log_audit(
+            actor=request.user,
+            action="USER_LOCATION_DATA_DELETED",
+            target_type="USER",
+            target_id=str(request.user.id),
+            summary=f"Deleted {deleted_pings} location ping(s) and cleared saved coordinates",
+            request=request,
+        )
+        return Response(
+            {
+                "detail": "All your stored location data has been deleted.",
+                "deleted_pings": deleted_pings,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class NotificationListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -260,7 +298,7 @@ class WomanDashboardSummaryView(APIView):
             Journey.objects.prefetch_related("trusted_contacts")
             .filter(
                 owner=request.user,
-                status__in=[Journey.Status.ACTIVE, Journey.Status.OVERDUE],
+                status__in=[Journey.Status.ACTIVE, Journey.Status.MISSED, Journey.Status.OVERDUE],
             )
             .first()
         )

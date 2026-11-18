@@ -87,7 +87,7 @@ class UserProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
     phone = models.CharField(max_length=24, blank=True)
-    city = models.CharField(max_length=100, default="Bengaluru", blank=True)
+    city = models.CharField(max_length=100, default="Mysuru", blank=True)
     emergency_note = models.CharField(
         max_length=280,
         blank=True,

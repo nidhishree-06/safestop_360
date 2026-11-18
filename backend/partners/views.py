@@ -1,5 +1,7 @@
 """Partner directory and nearby geolocation search views."""
 
+import math
+
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
@@ -18,10 +20,25 @@ from partners.serializers import (
     PartnerOwnerSerializer,
     PartnerPublicSerializer,
 )
+from safestop.exceptions import error_response
 from safestop.permissions import IsAdminRole, IsPartnerOrAdmin
 
-DEFAULT_BENGALURU_LAT = 12.971599
-DEFAULT_BENGALURU_LNG = 77.594566
+DEFAULT_MYSURU_LAT = 12.2958
+DEFAULT_MYSURU_LNG = 76.6394
+MAX_NEARBY_RADIUS_KM = 25.0
+
+
+def bounding_box_for_radius(lat: float, lng: float, radius_km: float) -> tuple[float, float, float, float]:
+    """Compute a conservative WGS84 bounding box (min_lat, max_lat, min_lng, max_lng)."""
+    lat_delta = radius_km / 111.32
+    cos_lat = max(math.cos(math.radians(lat)), 0.01)
+    lng_delta = radius_km / (111.32 * cos_lat)
+    return (
+        max(-90.0, lat - lat_delta),
+        min(90.0, lat + lat_delta),
+        max(-180.0, lng - lng_delta),
+        min(180.0, lng + lng_delta),
+    )
 
 
 def _filter_partners_queryset(request: Request, qs):
@@ -66,31 +83,44 @@ class PartnerListView(APIView):
 
 
 class NearbyPartnersView(APIView):
-    """Nearby approved partners sorted by Haversine distance. Never persists user coordinates."""
+    """Nearby APPROVED partners via bounding-box prefilter + Haversine. Never persists user coordinates."""
 
     permission_classes = [permissions.AllowAny]
 
     def get(self, request: Request) -> Response:
         try:
-            lat = float(request.query_params.get("lat", DEFAULT_BENGALURU_LAT))
-            lng = float(request.query_params.get("lng", DEFAULT_BENGALURU_LNG))
-            radius_km = float(request.query_params.get("radius_km", 20.0))
+            lat = float(request.query_params.get("lat", DEFAULT_MYSURU_LAT))
+            lng = float(request.query_params.get("lng", DEFAULT_MYSURU_LNG))
+            radius_km = float(request.query_params.get("radius_km", 5.0))
         except ValueError:
-            return Response(
-                {"detail": "Invalid latitude, longitude, or radius_km value."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                "Invalid latitude, longitude, or radius_km value.",
+                "invalid_coordinates",
+                status.HTTP_400_BAD_REQUEST,
             )
 
         if not (-90 <= lat <= 90 and -180 <= lng <= 180):
-            return Response(
-                {"detail": "Coordinates out of valid geographic bounds."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                "Coordinates out of valid geographic bounds.",
+                "coordinates_out_of_range",
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        radius_km = max(0.5, min(radius_km, 100.0))
+        if radius_km <= 0 or radius_km > MAX_NEARBY_RADIUS_KM:
+            return error_response(
+                f"radius_km must be between 0.1 and {MAX_NEARBY_RADIUS_KM} km.",
+                "invalid_radius",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        min_lat, max_lat, min_lng, max_lng = bounding_box_for_radius(lat, lng, radius_km)
 
         qs = Partner.objects.select_related("availability").filter(
-            verification_status=Partner.VerificationStatus.APPROVED
+            verification_status=Partner.VerificationStatus.APPROVED,
+            latitude__gte=min_lat,
+            latitude__lte=max_lat,
+            longitude__gte=min_lng,
+            longitude__lte=max_lng,
         )
         qs = _filter_partners_queryset(request, qs)
 

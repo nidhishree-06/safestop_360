@@ -6,20 +6,48 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import AuditLog, User
+from analysis.analyzer import analyze_reports as analyze_safety_reports
 from assistance.models import HelpRequest
 from assistance.serializers import HelpRequestSerializer
 from companions.models import Companion
 from journeys.models import Journey
 from partners.models import Partner, PartnerAvailability
 from partners.serializers import PartnerPublicSerializer
-from reports.intelligence import analyze_safety_reports
 from reports.models import SafetyReport
 from reports.serializers import SafetyReportPublicSerializer
 from safestop.permissions import IsAdminRole
 
 
+class AdminAuditLogListView(APIView):
+    """Dedicated admin audit log viewer."""
+
+    permission_classes = [IsAdminRole]
+
+    def get(self, request: Request) -> Response:
+        qs = AuditLog.objects.select_related("actor").all()
+        action = request.query_params.get("action", "").strip()
+        if action:
+            qs = qs.filter(action__icontains=action)
+        target_type = request.query_params.get("target_type", "").strip().upper()
+        if target_type and target_type != "ALL":
+            qs = qs.filter(target_type=target_type)
+        items = [
+            {
+                "id": str(log.id),
+                "action": log.action,
+                "target_type": log.target_type,
+                "target_id": log.target_id,
+                "summary": log.summary,
+                "actor_email": log.actor.email if log.actor else "System",
+                "created_at": log.created_at,
+            }
+            for log in qs[:100]
+        ]
+        return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
+
+
 class AdminAnalyticsView(APIView):
-    """Real-data platform analytics, AI safety summary, request oversight, and audit logs.
+    """Real-data platform analytics, rule-based safety summary, request oversight, and audit logs.
 
     Privacy guarantee: private Journey routes/coordinates are NEVER included here—only
     an aggregate active journey count.
@@ -34,8 +62,8 @@ class AdminAnalyticsView(APIView):
         )
         recent_requests = HelpRequest.objects.select_related(
             "partner", "requester", "feedback"
-        ).all()[:15]
-        recent_audits = AuditLog.objects.select_related("actor").all()[:25]
+        ).all()[:20]
+        recent_audits = AuditLog.objects.select_related("actor").all()[:30]
 
         return Response(
             {
@@ -72,11 +100,17 @@ class AdminAnalyticsView(APIView):
                         verification_status=Companion.VerificationStatus.PENDING
                     ).count(),
                     "active_journeys_count": Journey.objects.filter(
-                        status__in=[Journey.Status.ACTIVE, Journey.Status.OVERDUE]
+                        status__in=[
+                            Journey.Status.ACTIVE,
+                            Journey.Status.MISSED,
+                            Journey.Status.OVERDUE,
+                        ]
                     ).count(),
                 },
                 "intelligence": analyze_safety_reports(all_reports),
-                "recent_requests": HelpRequestSerializer(recent_requests, many=True).data,
+                "recent_requests": HelpRequestSerializer(
+                    recent_requests, many=True, context={"request": request}
+                ).data,
                 "audit_logs": [
                     {
                         "id": str(log.id),

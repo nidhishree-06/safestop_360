@@ -1,18 +1,23 @@
-"""Serializers for anonymized community safety reports and admin moderation."""
+"""Serializers for anonymized community safety reports and admin moderation.
+
+Privacy guarantee: public report coordinates are rounded to ~3 decimal places (~110 m).
+"""
 
 from rest_framework import serializers
 
-from reports.intelligence import classify_report_text
+from analysis.analyzer import classify_report_text
 from reports.models import SafetyReport
 
 
 class SafetyReportPublicSerializer(serializers.ModelSerializer):
-    """Public/community projection — strictly strips reporter identity."""
+    """Public/community projection — strictly strips reporter identity and rounds coordinates."""
 
     category_display = serializers.CharField(source="get_category_display", read_only=True)
     review_status_display = serializers.CharField(
         source="get_review_status_display", read_only=True
     )
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
     is_unreviewed = serializers.SerializerMethodField()
     ai_classification = serializers.SerializerMethodField()
 
@@ -36,6 +41,12 @@ class SafetyReportPublicSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_latitude(self, obj: SafetyReport) -> float:
+        return round(float(obj.latitude), 3)
+
+    def get_longitude(self, obj: SafetyReport) -> float:
+        return round(float(obj.longitude), 3)
 
     def get_is_unreviewed(self, obj: SafetyReport) -> bool:
         return obj.review_status == SafetyReport.ReviewStatus.UNREVIEWED
@@ -86,4 +97,6 @@ class SafetyReportCreateSerializer(serializers.ModelSerializer):
 
 class AdminReportReviewSerializer(serializers.Serializer):
     review_status = serializers.ChoiceField(choices=SafetyReport.ReviewStatus.choices)
-    admin_notes = serializers.CharField(max_length=600, required=False, allow_blank=True, default="")
+    admin_notes = serializers.CharField(
+        max_length=600, required=False, allow_blank=True, default=""
+    )

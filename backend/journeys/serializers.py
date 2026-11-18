@@ -1,11 +1,11 @@
-"""Serializers for private Journey Watch and Trusted Contacts."""
+"""Serializers for private Journey Watch, Trusted Contacts, live pings, and private contact links."""
 
 from datetime import timedelta
 
 from django.utils import timezone
 from rest_framework import serializers
 
-from journeys.models import Journey, JourneyCheckIn, TrustedContact
+from journeys.models import Journey, JourneyCheckIn, LocationPing, TrustedContact
 
 
 class TrustedContactSerializer(serializers.ModelSerializer):
@@ -44,12 +44,21 @@ class JourneyCheckInSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class LocationPingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LocationPing
+        fields = ["id", "latitude", "longitude", "accuracy_m", "created_at"]
+        read_only_fields = fields
+
+
 class JourneySerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     trusted_contacts = TrustedContactSerializer(many=True, read_only=True)
     checkins = JourneyCheckInSerializer(many=True, read_only=True)
     next_checkin_due_at = serializers.SerializerMethodField()
     is_checkin_overdue = serializers.SerializerMethodField()
+    is_share_link_valid = serializers.BooleanField(read_only=True)
+    recent_pings = serializers.SerializerMethodField()
 
     class Meta:
         model = Journey
@@ -60,10 +69,14 @@ class JourneySerializer(serializers.ModelSerializer):
             "destination_latitude",
             "destination_longitude",
             "expected_arrival_at",
+            "expected_checkin_at",
             "checkin_interval_minutes",
             "status",
             "status_display",
             "location_sharing_enabled",
+            "share_token",
+            "share_token_revoked",
+            "is_share_link_valid",
             "last_known_latitude",
             "last_known_longitude",
             "last_checkin_at",
@@ -72,14 +85,17 @@ class JourneySerializer(serializers.ModelSerializer):
             "is_checkin_overdue",
             "trusted_contacts",
             "checkins",
+            "recent_pings",
             "created_at",
             "updated_at",
         ]
         read_only_fields = fields
 
     def _compute_next_due(self, obj: Journey):
-        if obj.status not in (Journey.Status.ACTIVE, Journey.Status.OVERDUE):
+        if not obj.is_active_session:
             return None
+        if obj.expected_checkin_at:
+            return obj.expected_checkin_at
         anchor = obj.last_checkin_at or obj.created_at
         interval_due = anchor + timedelta(minutes=obj.checkin_interval_minutes)
         return min(interval_due, obj.expected_arrival_at)
@@ -93,12 +109,79 @@ class JourneySerializer(serializers.ModelSerializer):
             return False
         return timezone.now() > due
 
+    def get_recent_pings(self, obj: Journey):
+        if not obj.location_sharing_enabled or not obj.is_active_session:
+            return []
+        pings = obj.location_pings.order_by("-created_at")[:25]
+        return LocationPingSerializer(reversed(list(pings)), many=True).data
+
+
+class SharedJourneyStatusSerializer(serializers.ModelSerializer):
+    """Read-only private snapshot for trusted contacts holding an unguessable token."""
+
+    traveler_name = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    recent_pings = serializers.SerializerMethodField()
+    checkins = JourneyCheckInSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Journey
+        fields = [
+            "id",
+            "traveler_name",
+            "origin_label",
+            "destination_label",
+            "destination_latitude",
+            "destination_longitude",
+            "expected_arrival_at",
+            "expected_checkin_at",
+            "status",
+            "status_display",
+            "location_sharing_enabled",
+            "last_known_latitude",
+            "last_known_longitude",
+            "last_checkin_at",
+            "recent_pings",
+            "checkins",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_traveler_name(self, obj: Journey) -> str:
+        return obj.owner.full_name or "SafeStop Traveler"
+
+    def get_recent_pings(self, obj: Journey):
+        if not obj.location_sharing_enabled or not obj.is_active_session:
+            return []
+        pings = obj.location_pings.order_by("-created_at")[:25]
+        return LocationPingSerializer(reversed(list(pings)), many=True).data
+
 
 class JourneyCreateSerializer(serializers.Serializer):
-    origin_label = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    origin_label = serializers.CharField(
+        max_length=200, required=False, allow_blank=True, default=""
+    )
     destination_label = serializers.CharField(max_length=200, min_length=2)
+    destination_latitude = serializers.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=-90,
+        max_value=90,
+    )
+    destination_longitude = serializers.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=-180,
+        max_value=180,
+    )
     expected_arrival_at = serializers.DateTimeField()
-    checkin_interval_minutes = serializers.IntegerField(min_value=5, max_value=180, default=15)
+    checkin_interval_minutes = serializers.IntegerField(
+        min_value=5, max_value=180, default=15
+    )
     location_sharing_enabled = serializers.BooleanField(default=False)
     trusted_contact_ids = serializers.ListField(
         child=serializers.UUIDField(), required=False, default=list
@@ -123,13 +206,40 @@ class JourneyCreateSerializer(serializers.Serializer):
 
 class JourneyCheckInCreateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(
-        choices=[JourneyCheckIn.CheckInStatus.SAFE, JourneyCheckIn.CheckInStatus.DELAYED],
+        choices=[
+            JourneyCheckIn.CheckInStatus.SAFE,
+            JourneyCheckIn.CheckInStatus.DELAYED,
+        ],
         default=JourneyCheckIn.CheckInStatus.SAFE,
     )
-    note = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
+    note = serializers.CharField(
+        max_length=240, required=False, allow_blank=True, default=""
+    )
     latitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, required=False, allow_null=True
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=-90,
+        max_value=90,
     )
     longitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, required=False, allow_null=True
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=-180,
+        max_value=180,
+    )
+
+
+class JourneyLocationPingSerializer(serializers.Serializer):
+    latitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, min_value=-90, max_value=90
+    )
+    longitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, min_value=-180, max_value=180
+    )
+    accuracy_m = serializers.FloatField(
+        min_value=0, max_value=50000, required=False, allow_null=True
     )
